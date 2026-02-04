@@ -10,7 +10,11 @@ const generateToken = (id) => {
 
 exports.register = async (req,res) => {
     try{
-        const [username,email,password] = req.body;
+        const {username,email,password} = req.body;
+
+        if (!username || !email || !password) {
+            return res.status(400).json({ message: "username, email, and password are required" });
+        }
 
         const userExist = await User.findOne({email});
 
@@ -18,9 +22,9 @@ exports.register = async (req,res) => {
             return res.status(400).json({message:"User already exist"});
         }
 
-        const hashPassword = bcrypt.hash(password,10);
+        const hashPassword = await bcrypt.hash(password,10);
         
-        const user = User.create({
+        const user = await User.create({
             username,
             email,
             password:hashPassword
@@ -30,19 +34,26 @@ exports.register = async (req,res) => {
             id:user._id,
             username:user.username,
             email:user.email,
-            password:user.password,
-            token:generateToken(user.id)
+            token:generateToken(user._id)
         })
 
     }catch(err){
-        res.status(500).json({message:err.message});
+        console.error("Register error:", err);
+        res.status(500).json({
+            message: err.message,
+            ...(process.env.NODE_ENV !== "production" ? { stack: err.stack } : {})
+        });
     }
 };
 
 
 exports.login = async (req,res) => {
     try{
-        const [email,password] = req.body;
+        const {email,password} = req.body;
+
+        if (!email || !password) {
+            return res.status(400).json({ message: "email and password are required" });
+        }
 
         const user = await User.findOne({email});
 
@@ -64,6 +75,10 @@ exports.login = async (req,res) => {
         });
 
     }catch(err){
-        res.status(500).json({message:err.message});
+        console.error("Login error:", err);
+        res.status(500).json({
+            message: err.message,
+            ...(process.env.NODE_ENV !== "production" ? { stack: err.stack } : {})
+        });
     }
 };

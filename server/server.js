@@ -15,7 +15,7 @@ app.get('/',(req,res)=>{
 })
 
 
-const connectDB = require("./config")
+const connectDB = require("./config/db")
 const PORT = process.env.PORT || 3000;
 connectDB();
 app.listen(PORT,()=>{
