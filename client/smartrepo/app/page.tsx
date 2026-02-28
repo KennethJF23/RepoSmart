@@ -2,13 +2,9 @@
 import { useState } from 'react';
 import { Header } from '../components/homepage/Header';
 import { Hero } from '../components/homepage/Hero';
-import { TrustedBySection } from '../components/homepage/TrustedBySection';
-import { ProblemSection } from '../components/homepage/ProblemSection';
 import { FeaturesSection } from '../components/homepage/FeaturesSection';
 import { StatsSection } from '../components/homepage/StatsSection';
 import { HowItWorks } from '../components/homepage/HowItWorks';
-import { ScreenshotSection } from '../components/homepage/ScreenshotSection';
-import { BenefitsSection } from '../components/homepage/BenefitsSection';
 import { CTASection } from '../components/homepage/CTASection';
 import { Footer } from '../components/homepage/Footer';
 import { AuthDialog } from '../components/homepage/AuthDialog';
