@@ -54,10 +54,10 @@ Base branch: main
 
 ## 🎨 UI Changes (if applicable)
 ### Before
-(Add screenshot or description)
+(Add screenshot)
 
 ### After
-(Add screenshot or description)
+(Add screenshot)
 
 ---
 
