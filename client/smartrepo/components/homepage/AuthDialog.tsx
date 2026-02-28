@@ -1,6 +1,5 @@
 "use client";
 import { useState } from "react";
-import Image from "next/image";
 import {
   Dialog,
   DialogContent,
@@ -13,6 +12,7 @@ import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../ui/tabs";
 import { Github, ArrowLeft } from "lucide-react";
+import { ImageWithFallback } from "./figma/ImageWithFallback";
 
 // Custom Google SVG Icon
 const GoogleIcon = ({ className }: { className?: string }) => (
@@ -39,6 +39,40 @@ const GoogleIcon = ({ className }: { className?: string }) => (
       fill="#EA4335"
     />
   </svg>
+);
+
+const SocialAuthButtons = () => (
+  <>
+    <div className="relative my-6">
+      <div className="absolute inset-0 flex items-center">
+        <div className="w-full border-t border-[#30363d]"></div>
+      </div>
+      <div className="relative flex justify-center text-xs sm:text-sm">
+        <span className="px-2 bg-[#161b22] text-[#8b949e]">
+          Or continue with
+        </span>
+      </div>
+    </div>
+
+    <div className="grid grid-cols-2 gap-3">
+      <Button
+        variant="outline"
+        type="button"
+        className="w-full border-[#30363d] bg-[#21262d] text-white hover:bg-[#30363d] hover:border-[#58a6ff]"
+      >
+        <GoogleIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />
+        Google
+      </Button>
+      <Button
+        variant="outline"
+        type="button"
+        className="w-full border-[#30363d] bg-[#21262d] text-white hover:bg-[#30363d] hover:border-[#58a6ff]"
+      >
+        <Github className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />
+        GitHub
+      </Button>
+    </div>
+  </>
 );
 
 interface AuthDialogProps {
@@ -93,46 +127,12 @@ export function AuthDialog({
     onOpenChange(isOpen);
   };
 
-  const SocialAuthButtons = () => (
-    <>
-      <div className="relative my-6">
-        <div className="absolute inset-0 flex items-center">
-          <div className="w-full border-t border-[#30363d]"></div>
-        </div>
-        <div className="relative flex justify-center text-xs sm:text-sm">
-          <span className="px-2 bg-[#161b22] text-[#8b949e]">
-            Or continue with
-          </span>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <Button
-          variant="outline"
-          type="button"
-          className="w-full border-[#30363d] bg-[#21262d] text-white hover:bg-[#30363d] hover:border-[#58a6ff]"
-        >
-          <GoogleIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />
-          Google
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          className="w-full border-[#30363d] bg-[#21262d] text-white hover:bg-[#30363d] hover:border-[#58a6ff]"
-        >
-          <Github className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />
-          GitHub
-        </Button>
-      </div>
-    </>
-  );
-
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent className="w-[95vw] sm:max-w-md bg-[#161b22] border border-[#30363d] text-white p-0 rounded-xl overflow-hidden">
         <DialogHeader className="p-4 sm:p-6 pb-0">
           <div className="flex items-center gap-3 mb-2 sm:mb-3">
-            <Image
+            <ImageWithFallback
               src="/images/heroLogo.png"
               alt="RepoSmart Logo"
               width={40}

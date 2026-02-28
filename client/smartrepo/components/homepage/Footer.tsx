@@ -1,5 +1,5 @@
-import { Shield, Github, Twitter, Linkedin, Mail } from "lucide-react";
-import Image from "next/image";
+import { Github, Twitter, Linkedin, Mail } from "lucide-react";
+import { ImageWithFallback } from "./figma/ImageWithFallback";
 
 export function Footer() {
   return (
@@ -9,7 +9,7 @@ export function Footer() {
           {/* Brand */}
           <div className="sm:col-span-2 md:col-span-2">
             <div className="flex items-center gap-2 mb-4">
-              <Image
+              <ImageWithFallback
                 src="/images/heroLogo.png"
                 alt="RepoSmart Logo"
                 width={40}

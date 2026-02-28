@@ -23,7 +23,7 @@ export default function NotFound() {
           <h1 className="text-5xl md:text-6xl font-bold text-white tracking-tight">404</h1>
           <h2 className="text-xl md:text-2xl font-semibold text-white">Page not found</h2>
           <p className="text-[#8b949e] text-sm md:text-base px-2">
-            Oops! Looks like the branch you're looking for doesn't exist, or the repository might have been deleted.
+            Oops! Looks like the branch you&apos;re looking for doesn&apos;t exist, or the repository might have been deleted.
           </p>
         </div>
 

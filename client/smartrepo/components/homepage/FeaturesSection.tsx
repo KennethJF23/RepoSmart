@@ -3,9 +3,6 @@ import {
   ShieldCheck,
   BarChart3,
   FileText,
-  ScanSearch,
-  Activity,
-  Lightbulb,
 } from "lucide-react";
 import { ImageWithFallback } from "./figma/ImageWithFallback";
 import { useEffect, useState } from "react";
@@ -63,7 +60,7 @@ export function FeaturesSection() {
             Comprehensive Repository Analysis
           </h2>
           <p className="text-base sm:text-lg text-[#8b949e] max-w-3xl mx-auto">
-            Powered by advanced algorithms and GitHub's API, RepoSmart provides
+            Powered by advanced algorithms and GitHub&apos;s API, RepoSmart provides
             everything you need to evaluate repositories with confidence.
           </p>
         </div>
@@ -78,6 +75,8 @@ export function FeaturesSection() {
                 <ImageWithFallback
                   src={feature.image}
                   alt={feature.title}
+                  width={100}
+                  height={400}
                   className="w-full h-full object-cover opacity-40 group-hover:opacity-60 group-hover:scale-105 transition-all duration-500"
                 />
                 <div

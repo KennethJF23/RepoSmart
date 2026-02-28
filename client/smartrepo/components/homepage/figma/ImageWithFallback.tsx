@@ -29,8 +29,8 @@ export function ImageWithFallback({
       {...props}
       src={imgSrc}
       alt={alt}
-      width={1200}
-      height={1000}
+      width={width}
+      height={height}
       onError={() => setImgSrc(fallbackSrc)}
     />
   );
