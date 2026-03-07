@@ -1,5 +1,37 @@
 export function getApiBaseUrl() {
-  return process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+  const raw = process.env.NEXT_PUBLIC_API_URL;
+  if (raw && raw.trim().length > 0) {
+    const trimmed = raw.trim().replace(/\/+$/, "");
+
+    // If the site is running on a public origin (e.g. Vercel), browsers block
+    // requests to a user's localhost/private network. Guard against accidental
+    // misconfiguration where NEXT_PUBLIC_API_URL is still set to localhost.
+    if (typeof window !== "undefined") {
+      const pageHost = window.location.hostname;
+      const pageIsLoopback =
+        pageHost === "localhost" ||
+        pageHost === "127.0.0.1" ||
+        pageHost === "0.0.0.0";
+
+      const apiIsLoopback = /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(trimmed);
+
+      if (!pageIsLoopback && apiIsLoopback) {
+        // Ignore and fall through to the production default.
+      } else {
+        return trimmed;
+      }
+    } else {
+      return trimmed;
+    }
+  }
+
+  // Local dev default.
+  if (process.env.NODE_ENV !== "production") {
+    return "http://localhost:5000";
+  }
+
+  // Production default (Render backend).
+  return "https://reposmart.onrender.com";
 }
 
 export function buildApiUrl(path: string) {
