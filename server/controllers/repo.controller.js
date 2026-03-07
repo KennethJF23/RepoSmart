@@ -258,29 +258,45 @@ function analyzeReadme(readmeText) {
 }
 
 function detectTooling(pathsSet) {
+  const basenames = new Set();
+  for (const p of pathsSet) {
+    if (typeof p !== "string") continue;
+    const normalized = p.replace(/\\/g, "/");
+    const parts = normalized.split("/").filter(Boolean);
+    if (parts.length === 0) continue;
+    basenames.add(parts[parts.length - 1]);
+  }
+
+  const hasAny = (...names) =>
+    names.some((name) => pathsSet.has(name) || basenames.has(name));
+
   const hasEslint =
-    pathsSet.has(".eslintrc") ||
-    pathsSet.has(".eslintrc.js") ||
-    pathsSet.has(".eslintrc.cjs") ||
-    pathsSet.has(".eslintrc.json") ||
-    pathsSet.has(".eslintrc.yml") ||
-    pathsSet.has(".eslintrc.yaml") ||
-    pathsSet.has("eslint.config.js") ||
-    pathsSet.has("eslint.config.mjs") ||
-    pathsSet.has("eslint.config.cjs");
+    hasAny(
+      ".eslintrc",
+      ".eslintrc.js",
+      ".eslintrc.cjs",
+      ".eslintrc.json",
+      ".eslintrc.yml",
+      ".eslintrc.yaml",
+      "eslint.config.js",
+      "eslint.config.mjs",
+      "eslint.config.cjs",
+    );
 
   const hasPrettier =
-    pathsSet.has(".prettierrc") ||
-    pathsSet.has(".prettierrc.js") ||
-    pathsSet.has(".prettierrc.cjs") ||
-    pathsSet.has(".prettierrc.json") ||
-    pathsSet.has(".prettierrc.yml") ||
-    pathsSet.has(".prettierrc.yaml") ||
-    pathsSet.has("prettier.config.js") ||
-    pathsSet.has("prettier.config.cjs") ||
-    pathsSet.has("prettier.config.mjs");
+    hasAny(
+      ".prettierrc",
+      ".prettierrc.js",
+      ".prettierrc.cjs",
+      ".prettierrc.json",
+      ".prettierrc.yml",
+      ".prettierrc.yaml",
+      "prettier.config.js",
+      "prettier.config.cjs",
+      "prettier.config.mjs",
+    );
 
-  const hasEditorConfig = pathsSet.has(".editorconfig");
+  const hasEditorConfig = hasAny(".editorconfig");
 
   const hasGitHubActions = hasPathPrefix(pathsSet, ".github/workflows");
   const hasDependabot = pathsSet.has(".github/dependabot.yml") || pathsSet.has(".github/dependabot.yaml");
@@ -296,39 +312,42 @@ function detectTooling(pathsSet) {
   const hasSrcDir = hasPathPrefix(pathsSet, "src") || hasPathPrefix(pathsSet, "app");
 
   const hasLockfile =
-    pathsSet.has("package-lock.json") ||
-    pathsSet.has("yarn.lock") ||
-    pathsSet.has("pnpm-lock.yaml") ||
-    pathsSet.has("bun.lockb") ||
-    pathsSet.has("bun.lock");
+    hasAny(
+      "package-lock.json",
+      "yarn.lock",
+      "pnpm-lock.yaml",
+      "bun.lockb",
+      "bun.lock",
+    );
 
-  const hasDocker = pathsSet.has("Dockerfile") || pathsSet.has("docker-compose.yml") || pathsSet.has("docker-compose.yaml");
+  const hasDocker = hasAny("Dockerfile", "docker-compose.yml", "docker-compose.yaml");
 
   const hasEnvExample =
-    pathsSet.has(".env.example") || pathsSet.has(".env.sample") || pathsSet.has(".env.template");
+    hasAny(".env.example", ".env.sample", ".env.template");
 
   const hasContributingFile =
-    pathsSet.has("CONTRIBUTING.md") || pathsSet.has(".github/CONTRIBUTING.md");
+    hasAny(
+      "CONTRIBUTING.md",
+      "CONTRIBUTION.md",
+      ".github/CONTRIBUTING.md",
+      ".github/CONTRIBUTION.md",
+    );
 
   const hasCodeOfConduct =
-    pathsSet.has("CODE_OF_CONDUCT.md") || pathsSet.has(".github/CODE_OF_CONDUCT.md");
+    hasAny("CODE_OF_CONDUCT.md", ".github/CODE_OF_CONDUCT.md");
 
-  const hasChangelog = pathsSet.has("CHANGELOG.md") || pathsSet.has("CHANGES.md");
+  const hasChangelog = hasAny("CHANGELOG.md", "CHANGES.md");
 
-  const hasSecurityPolicy = pathsSet.has("SECURITY.md") || pathsSet.has(".github/SECURITY.md");
+  const hasSecurityPolicy = hasAny("SECURITY.md", ".github/SECURITY.md");
 
   const hasIssueTemplates = hasPathPrefix(pathsSet, ".github/ISSUE_TEMPLATE");
   const hasPullRequestTemplate =
     pathsSet.has(".github/PULL_REQUEST_TEMPLATE.md") || hasPathPrefix(pathsSet, ".github/PULL_REQUEST_TEMPLATE");
 
-  const hasGitIgnore = pathsSet.has(".gitignore");
+  const hasGitIgnore = hasAny(".gitignore");
 
   const hasDeployConfig =
-    pathsSet.has("vercel.json") ||
-    pathsSet.has("netlify.toml") ||
-    pathsSet.has("firebase.json") ||
-    pathsSet.has("app.yaml") ||
-    pathsSet.has("render.yaml");
+    hasAny("vercel.json", "netlify.toml", "firebase.json", "app.yaml", "render.yaml");
 
   return {
     hasEslint,
