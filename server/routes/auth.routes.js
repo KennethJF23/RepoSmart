@@ -6,6 +6,16 @@ const { sendOTP, verifyOTP, resetPassword } = require("../controllers/forgotPass
 
 router.post("/register", register);
 router.post("/login", login);
+// Exposes Google OAuth client id to the frontend.
+// Note: client id is not a secret (unlike the client secret).
+router.get("/google-client-id", (req, res) => {
+	const clientId = process.env.GOOGLE_CLIENT_ID;
+	if (!clientId) {
+		return res.status(500).json({ message: "GOOGLE_CLIENT_ID is not configured" });
+	}
+
+	res.json({ clientId });
+});
 router.post("/google", googleAuth);
 router.post("/forgot-password", sendOTP);
 router.post("/verify-otp", verifyOTP);
