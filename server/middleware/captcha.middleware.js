@@ -29,6 +29,7 @@ async function verifyCaptcha(req, res, next) {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
+        timeout: 5000,
       },
     );
 
@@ -40,7 +41,20 @@ async function verifyCaptcha(req, res, next) {
 
     return next();
   } catch (error) {
-    console.error("CAPTCHA verify error:", error);
+    const isTimeout = error?.code === "ECONNABORTED";
+
+    console.error("CAPTCHA verify error:", {
+      message: error?.message,
+      code: error?.code,
+      responseStatus: error?.response?.status,
+    });
+
+    if (isTimeout) {
+      return res.status(504).json({
+        message: "CAPTCHA verification timed out. Please try again.",
+      });
+    }
+
     return res.status(502).json({
       message: "Unable to verify CAPTCHA at the moment. Please retry.",
     });

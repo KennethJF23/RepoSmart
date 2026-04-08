@@ -59,6 +59,20 @@ export function AuthDialog({
   const recaptchaSiteKey =
     process.env.NEXT_PUBLIC_RECAPTCHA_SITE_KEY?.trim() ?? "";
 
+  const handleLoginCaptchaChange = (token: string | null) => {
+    setLoginCaptchaToken(token);
+    if (token) {
+      setLoginError(null);
+    }
+  };
+
+  const handleRegisterCaptchaChange = (token: string | null) => {
+    setRegisterCaptchaToken(token);
+    if (token) {
+      setRegisterError(null);
+    }
+  };
+
   const shouldReduceMotion = useReducedMotion();
   const ease: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
@@ -584,7 +598,7 @@ export function AuthDialog({
                           <ReCAPTCHA
                             ref={loginCaptchaRef}
                             sitekey={recaptchaSiteKey}
-                            onChange={setLoginCaptchaToken}
+                            onChange={handleLoginCaptchaChange}
                             onExpired={() => setLoginCaptchaToken(null)}
                           />
                         ) : (
@@ -691,7 +705,7 @@ export function AuthDialog({
                           <ReCAPTCHA
                             ref={registerCaptchaRef}
                             sitekey={recaptchaSiteKey}
-                            onChange={setRegisterCaptchaToken}
+                            onChange={handleRegisterCaptchaChange}
                             onExpired={() => setRegisterCaptchaToken(null)}
                           />
                         ) : (
