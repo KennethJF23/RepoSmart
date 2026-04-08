@@ -1,23 +1,23 @@
 const nodemailer = require("nodemailer");
 
 // MailTrap Configuration
-const transporter = nodemailer.createTransport({
-    host: process.env.MAILTRAP_HOST,
-    port: process.env.MAILTRAP_PORT,
-    auth: {
-        user: process.env.MAILTRAP_USER,
-        pass: process.env.MAILTRAP_PASS,
-    },
-});
+// const transporter = nodemailer.createTransport({
+//     host: process.env.MAILTRAP_HOST,
+//     port: process.env.MAILTRAP_PORT,
+//     auth: {
+//         user: process.env.MAILTRAP_USER,
+//         pass: process.env.MAILTRAP_PASS,
+//     },
+// });
 
 // Google Configuration
-// const transporter = nodemailer.createTransport({
-//   service: "gmail",
-//   auth: {
-//     user: process.env.EMAIL_USER,
-//     pass: process.env.EMAIL_PASS, // app password
-//   },
-// });
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.GOOGLE_EMAIL_USER,
+    pass: process.env.GOOGLE_EMAIL_PASS, // app password
+  },
+});
 
 const sendOtpEmail = async (email, otp) => {
     const html = `
@@ -69,7 +69,7 @@ const sendOtpEmail = async (email, otp) => {
   `;
 
     await transporter.sendMail({
-        from: `"RepoSmart" <${process.env.MAILTRAP_USER}>`,
+        from: `"RepoSmart" <${process.env.GOOGLE_EMAIL_USER}>`,
         to: email,
         subject: "Your OTP for Password Reset",
         html,
