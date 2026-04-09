@@ -1,9 +1,31 @@
 "use client";
 
-import { useEffect, useSyncExternalStore, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ExternalLink } from "lucide-react";
+import {
+  ArrowRight,
+  ExternalLink,
+  Loader2,
+  Sparkles,
+  Target,
+  TrendingUp,
+  GitBranch,
+  CheckCircle2,
+} from "lucide-react";
+import {
+  ResponsiveContainer,
+  BarChart,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  Bar,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts";
+import { motion } from "framer-motion";
 
 import { Header } from "../../components/homepage/Header";
 import { Footer } from "../../components/homepage/Footer";
@@ -103,6 +125,12 @@ type RepoAnalysisResponse = {
   roadmap: string[];
 };
 
+type ScoreRingProps = {
+  score: number;
+};
+
+const PIE_COLORS = ["#58a6ff", "#79c0ff", "#1f6feb", "#3fb950", "#f2cc60", "#f0883e"];
+
 function formatPercent(value: number) {
   return `${Math.round(value * 100)}%`;
 }
@@ -113,27 +141,100 @@ function formatDate(iso: string) {
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "2-digit" });
 }
 
-function ScoreBar({ score, max }: { score: number; max: number }) {
-  const pct = max > 0 ? Math.round((score / max) * 100) : 0;
-  return (
-    <div className="w-full">
-      <div className="h-2 w-full rounded-full bg-surface-2 border border-[#30363d] overflow-hidden">
-        <div
-          className="h-full bg-[#58a6ff]"
-          style={{ width: `${pct}%` }}
-          aria-hidden="true"
-        />
-      </div>
-    </div>
-  );
-}
-
 function isDetectedLicense(license: string | null) {
   if (typeof license !== "string") return false;
   const value = license.trim();
   if (!value) return false;
   if (value.toUpperCase() === "NOASSERTION") return false;
   return true;
+}
+
+function getSummaryHighlights(summary: string) {
+  return summary
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function ScoreRing({ score }: ScoreRingProps) {
+  const radius = 62;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.max(0, Math.min(100, score));
+  const strokeOffset = circumference - (clamped / 100) * circumference;
+  const [displayedScore, setDisplayedScore] = useState(0);
+  const frameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const duration = 1200;
+    const start = performance.now();
+
+    const tick = (now: number) => {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setDisplayedScore(Math.round(clamped * eased));
+
+      if (progress < 1) {
+        frameRef.current = requestAnimationFrame(tick);
+      }
+    };
+
+    frameRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+    };
+  }, [clamped]);
+
+  return (
+    <div className="relative h-40 w-40">
+      <svg className="h-40 w-40 -rotate-90" viewBox="0 0 160 160" role="img" aria-label={`Score ${clamped} out of 100`}>
+        <circle cx="80" cy="80" r={radius} fill="none" stroke="#1f2a3d" strokeWidth="14" />
+        <motion.circle
+          cx="80"
+          cy="80"
+          r={radius}
+          fill="none"
+          stroke="url(#scoreGradient)"
+          strokeWidth="14"
+          strokeLinecap="round"
+          initial={{ strokeDashoffset: circumference }}
+          animate={{ strokeDashoffset: strokeOffset }}
+          transition={{ duration: 1.2, ease: "easeOut" }}
+          strokeDasharray={circumference}
+        />
+        <defs>
+          <linearGradient id="scoreGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#79c0ff" />
+            <stop offset="60%" stopColor="#58a6ff" />
+            <stop offset="100%" stopColor="#1f6feb" />
+          </linearGradient>
+        </defs>
+      </svg>
+
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <div className="text-3xl font-bold text-white tabular-nums">{displayedScore}</div>
+        <div className="text-xs text-[#8b949e]">out of 100</div>
+      </div>
+    </div>
+  );
+}
+
+function LoadingPanel() {
+  return (
+    <div className="mt-10 rounded-2xl border border-[#30363d] bg-surface-1/80 p-6">
+      <div className="flex items-center gap-3 text-[#c9d1d9]">
+        <Loader2 className="h-5 w-5 animate-spin text-[#58a6ff]" />
+        <span className="text-sm">Analyzing repository and generating roadmap...</span>
+      </div>
+
+      <div className="mt-5 space-y-3">
+        <div className="h-3 w-2/3 rounded-full bg-surface-2 animate-pulse" />
+        <div className="h-3 w-full rounded-full bg-surface-2 animate-pulse" />
+        <div className="h-3 w-4/5 rounded-full bg-surface-2 animate-pulse" />
+      </div>
+    </div>
+  );
 }
 
 export default function AnalyzePage() {
@@ -160,17 +261,13 @@ export default function AnalyzePage() {
     setSubmitting(true);
 
     try {
-      const token = getAuthToken();
-      if (!token) {
+      const currentToken = getAuthToken();
+      if (!currentToken) {
         router.replace("/");
         return;
       }
 
-      const data = await postJson<RepoAnalysisResponse>(
-        "/api/repo/analyze",
-        { url: repoUrl },
-        { token },
-      );
+      const data = await postJson<RepoAnalysisResponse>("/api/repo/analyze", { url: repoUrl }, { token: currentToken });
       setResult(data);
     } catch (err) {
       setResult(null);
@@ -180,251 +277,298 @@ export default function AnalyzePage() {
     }
   };
 
+  const breakdownChart = useMemo(
+    () =>
+      (result?.score.breakdown ?? []).map((item) => ({
+        name: item.label.length > 14 ? `${item.label.slice(0, 14)}...` : item.label,
+        score: Number(((item.score / Math.max(item.max, 1)) * 100).toFixed(1)),
+      })),
+    [result],
+  );
+
+  const languageChart = useMemo(
+    () =>
+      (result?.snapshot.languagesTop ?? []).slice(0, 6).map((lang, idx) => ({
+        name: lang.name,
+        value: lang.percent,
+        color: PIE_COLORS[idx % PIE_COLORS.length],
+      })),
+    [result],
+  );
+
+  const activityBars = useMemo(() => {
+    if (!result) return [];
+    const commitsValue = Math.min(100, result.snapshot.git.commitsLast90Days);
+    const activeDaysValue = Math.min(100, Math.round((result.snapshot.git.activeCommitDaysLast90Days / 90) * 100));
+    const prValue = Math.min(100, result.snapshot.git.pullRequests * 8);
+
+    return [
+      { label: "Commit volume", value: commitsValue },
+      { label: "Active days", value: activeDaysValue },
+      { label: "PR rhythm", value: prValue },
+    ];
+  }, [result]);
+
   if (!token) {
     return <div className="min-h-screen bg-background" />;
   }
 
   return (
     <div className="min-h-screen bg-background">
-      <Header
-        onLogin={() => router.push("/")}
-        onRegister={() => router.push("/")}
-      />
+      <Header onLogin={() => router.push("/")} onRegister={() => router.push("/")} />
 
       <main>
         <section className="relative overflow-hidden bg-background pt-16 pb-20">
-          <div className="absolute inset-0 opacity-5">
+          <div className="pointer-events-none absolute inset-0">
             <div
-              className="w-full h-full"
+              className="h-full w-full opacity-[0.08]"
               style={{
                 backgroundImage:
                   "linear-gradient(to right, #58a6ff 1px, transparent 1px), linear-gradient(to bottom, #58a6ff 1px, transparent 1px)",
-                backgroundSize: "80px 80px",
+                backgroundSize: "74px 74px",
               }}
             />
+            <div className="absolute left-1/4 top-10 h-52 w-52 rounded-full bg-[#1f6feb]/20 blur-3xl" />
+            <div className="absolute right-1/4 bottom-0 h-52 w-52 rounded-full bg-[#58a6ff]/20 blur-3xl" />
           </div>
 
-          <div className="container mx-auto px-4 sm:px-6 lg:px-10 relative z-10">
-            <div className="max-w-3xl mx-auto">
-              <div
-                className="rs-glow inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-1 border border-[#30363d] text-sm"
-                style={{ "--rs-glow-color": "#58a6ff" }}
-              >
-                <span className="text-[#c9d1d9]">Repository Mirror</span>
-                {user ? (
-                  <span className="text-[#8b949e]">• Signed in as {user.username}</span>
-                ) : null}
-              </div>
-
-              <h1 className="rs-text-glow text-3xl sm:text-4xl lg:text-5xl font-bold text-white leading-tight mt-4">
-                Analyze a GitHub repository
-              </h1>
-              <p className="text-base sm:text-lg text-[#8b949e] mt-3 leading-relaxed">
-                Paste a public repository URL to get a score, a short evaluation summary, and a personalized improvement roadmap.
-              </p>
-
-              <form
-                onSubmit={handleAnalyze}
-                className="mt-8 bg-surface-1 border border-[#30363d] rounded-xl p-4 sm:p-6"
-              >
-                <Label htmlFor="repo-url" className="text-[#c9d1d9] text-sm">
-                  GitHub Repository URL
-                </Label>
-
-                <div className="mt-2 flex flex-col sm:flex-row gap-3">
-                  <Input
-                    id="repo-url"
-                    value={repoUrl}
-                    onChange={(e) => setRepoUrl(e.target.value)}
-                    placeholder="https://github.com/owner/repo"
-                    className="bg-background border-[#30363d] text-white placeholder:text-[#6e7681] focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff]"
-                    disabled={submitting}
-                    required
-                  />
-
-                  <Button
-                    type="submit"
-                    disabled={submitting}
-                    className="bg-[#1f6feb] hover:bg-[#388bfd] text-white border-0 shadow-lg shadow-[#1f6feb]/20"
-                  >
-                    {submitting ? "Analyzing…" : "Analyze"}
-                    <ArrowRight className="ml-2 w-4 h-4" />
-                  </Button>
+          <div className="container relative z-10 mx-auto px-4 sm:px-6 lg:px-10">
+            <div className="mx-auto max-w-6xl">
+              <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.45 }}>
+                <div
+                  className="rs-glow inline-flex items-center gap-2 rounded-full border border-[#30363d] bg-surface-1 px-3 py-1 text-sm"
+                  style={{ "--rs-glow-color": "#58a6ff" } as React.CSSProperties}
+                >
+                  <Sparkles className="h-4 w-4 text-[#58a6ff]" />
+                  <span className="text-[#c9d1d9]">Repository Quality Lab</span>
+                  {user ? <span className="text-[#8b949e]">• {user.username}</span> : null}
                 </div>
 
-                {error ? <p className="text-xs text-red-400 mt-3">{error}</p> : null}
-              </form>
+                <h1 className="rs-text-glow mt-4 text-3xl font-bold leading-tight text-white sm:text-4xl lg:text-5xl">
+                  Analyze repository health
+                </h1>
+                <p className="mt-3 max-w-2xl text-base leading-relaxed text-[#8b949e] sm:text-lg">
+                  Get a polished score dashboard, actionable roadmap, and a clean summary that helps your project look production-ready.
+                </p>
 
-              {result ? (
-                <div className="mt-10 space-y-6">
-                  <div className="bg-surface-1 border border-[#30363d] rounded-xl p-5">
-                    <div className="flex items-start justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-semibold text-white">License</div>
+                <form onSubmit={handleAnalyze} className="mt-8 rounded-2xl border border-[#30363d] bg-surface-1/90 p-4 sm:p-6">
+                  <Label htmlFor="repo-url" className="text-sm text-[#c9d1d9]">
+                    GitHub Repository URL
+                  </Label>
 
-                        {isDetectedLicense(result.repo.license) ? (
-                          <p className="mt-2 text-sm text-[#c9d1d9] leading-relaxed">
-                            Licensed under{" "}
-                            <span className="font-semibold text-white">
-                              {result.repo.license}
-                            </span>
-                            .
-                          </p>
-                        ) : (
-                          <>
-                            <p className="mt-2 text-sm text-[#c9d1d9] leading-relaxed">
-                              No license detected.
-                            </p>
-                            <p className="mt-2 text-xs text-red-400 leading-relaxed">
-                              Warning: This repository does not advertise a license. Add a LICENSE file to clarify how others may use, modify, and distribute your code.
-                            </p>
-                          </>
-                        )}
-                      </div>
+                  <div className="mt-2 flex flex-col gap-3 sm:flex-row">
+                    <Input
+                      id="repo-url"
+                      value={repoUrl}
+                      onChange={(e) => setRepoUrl(e.target.value)}
+                      placeholder="https://github.com/owner/repo"
+                      className="border-[#30363d] bg-background text-white placeholder:text-[#6e7681] focus:border-[#58a6ff] focus:ring-1 focus:ring-[#58a6ff]"
+                      disabled={submitting}
+                      required
+                    />
 
-                      <span
-                        className={
-                          "text-xs border border-[#30363d] bg-background/40 rounded-full px-2 py-1 " +
-                          (isDetectedLicense(result.repo.license)
-                            ? "text-[#c9d1d9]"
-                            : "text-red-400")
-                        }
-                      >
-                        {isDetectedLicense(result.repo.license)
-                          ? "Licensed"
-                          : "Warning"}
-                      </span>
-                    </div>
+                    <Button
+                      type="submit"
+                      disabled={submitting}
+                      className="min-w-36 border-0 bg-[#1f6feb] text-white shadow-lg shadow-[#1f6feb]/20 hover:bg-[#388bfd]"
+                    >
+                      {submitting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Analyzing
+                        </>
+                      ) : (
+                        <>
+                          Analyze
+                          <ArrowRight className="ml-2 h-4 w-4" />
+                        </>
+                      )}
+                    </Button>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="bg-surface-1 border border-[#30363d] rounded-xl p-5">
-                      <div className="text-xs text-[#8b949e]">Overall score</div>
-                      <div className="mt-2 flex items-end gap-3">
-                        <div className="text-4xl font-bold text-white">
-                          {result.score.total}
-                          <span className="text-base text-[#8b949e]">/100</span>
-                        </div>
-                        <div className="text-sm text-[#8b949e] pb-1">
-                          {result.score.level} • {result.score.badge}
-                        </div>
+                  {error ? <p className="mt-3 text-xs text-red-400">{error}</p> : null}
+                </form>
+              </motion.div>
+
+              {submitting ? <LoadingPanel /> : null}
+
+              {result ? (
+                <motion.div
+                  className="mt-10 space-y-6"
+                  initial={{ opacity: 0, y: 14 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.5 }}
+                >
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+                    <div className="rounded-2xl border border-[#30363d] bg-surface-1 p-5">
+                      <div className="mb-4 flex items-center justify-between">
+                        <div className="text-xs uppercase tracking-[0.18em] text-[#8b949e]">Score</div>
+                        <span className="rounded-full border border-[#2a3344] bg-background/40 px-2 py-1 text-[11px] text-[#c9d1d9]">
+                          {result.score.level}
+                        </span>
                       </div>
-                      <div className="mt-4">
-                        <ScoreBar score={result.score.total} max={100} />
+
+                      <div className="flex items-center justify-center">
+                        <ScoreRing score={result.score.total} />
                       </div>
+
+                      <div className="mt-4 text-center text-sm text-[#8b949e]">Badge: {result.score.badge}</div>
                     </div>
 
-                    <div className="bg-surface-1 border border-[#30363d] rounded-xl p-5 md:col-span-2">
+                    <div className="rounded-2xl border border-[#30363d] bg-surface-1 p-5 lg:col-span-2">
                       <div className="flex items-start justify-between gap-4">
                         <div>
-                          <div className="text-xs text-[#8b949e]">Repository</div>
-                          <div className="mt-1 text-white font-semibold text-lg wrap-break-word">
-                            {result.repo.fullName}
-                          </div>
-                          <div className="mt-1 text-sm text-[#8b949e] leading-relaxed">
+                          <div className="text-xs uppercase tracking-[0.18em] text-[#8b949e]">Repository</div>
+                          <div className="mt-1 wrap-break-word text-lg font-semibold text-white">{result.repo.fullName}</div>
+                          <p className="mt-1 text-sm leading-relaxed text-[#8b949e]">
                             {result.repo.description || "No description provided."}
-                          </div>
+                          </p>
                         </div>
 
                         <Link
                           href={result.repo.htmlUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-2 text-sm text-[#58a6ff] hover:underline whitespace-nowrap"
+                          className="inline-flex items-center gap-2 whitespace-nowrap text-sm text-[#58a6ff] hover:underline"
                         >
                           View on GitHub
-                          <ExternalLink className="w-4 h-4" />
+                          <ExternalLink className="h-4 w-4" />
                         </Link>
                       </div>
 
-                      <div className="mt-4 grid grid-cols-2 sm:grid-cols-4 gap-3">
-                        <div className="bg-surface-2 border border-[#30363d] rounded-lg p-3">
+                      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        <div className="rounded-lg border border-[#30363d] bg-surface-2 p-3">
                           <div className="text-[10px] text-[#8b949e]">Stars</div>
-                          <div className="text-white font-semibold">{result.repo.stars}</div>
+                          <div className="font-semibold text-white">{result.repo.stars}</div>
                         </div>
-                        <div className="bg-surface-2 border border-[#30363d] rounded-lg p-3">
+                        <div className="rounded-lg border border-[#30363d] bg-surface-2 p-3">
                           <div className="text-[10px] text-[#8b949e]">Forks</div>
-                          <div className="text-white font-semibold">{result.repo.forks}</div>
+                          <div className="font-semibold text-white">{result.repo.forks}</div>
                         </div>
-                        <div className="bg-surface-2 border border-[#30363d] rounded-lg p-3">
+                        <div className="rounded-lg border border-[#30363d] bg-surface-2 p-3">
                           <div className="text-[10px] text-[#8b949e]">Files</div>
-                          <div className="text-white font-semibold">{result.snapshot.files.fileCount}</div>
+                          <div className="font-semibold text-white">{result.snapshot.files.fileCount}</div>
                         </div>
-                        <div className="bg-surface-2 border border-[#30363d] rounded-lg p-3">
+                        <div className="rounded-lg border border-[#30363d] bg-surface-2 p-3">
                           <div className="text-[10px] text-[#8b949e]">Last push</div>
-                          <div className="text-white font-semibold">{formatDate(result.repo.pushedAt)}</div>
+                          <div className="font-semibold text-white">{formatDate(result.repo.pushedAt)}</div>
                         </div>
                       </div>
-                    </div>
-                  </div>
 
-                  <div className="bg-surface-1 border border-[#30363d] rounded-xl p-5">
-                    <div className="text-sm font-semibold text-white">Summary</div>
-                    <p className="mt-2 text-sm text-[#c9d1d9] leading-relaxed">{result.summary}</p>
-                  </div>
-
-                  <div className="bg-surface-1 border border-[#30363d] rounded-xl p-5">
-                    <div className="text-sm font-semibold text-white">Score breakdown</div>
-
-                    <div className="mt-4 space-y-3">
-                      {result.score.breakdown.map((item) => (
-                        <div key={item.key} className="bg-surface-2 border border-[#30363d] rounded-lg p-3">
-                          <div className="flex items-center justify-between gap-4">
-                            <div className="text-sm text-white">{item.label}</div>
-                            <div className="text-xs text-[#8b949e]">{item.score}/{item.max}</div>
+                      <div className="mt-4 rounded-lg border border-[#30363d] bg-surface-2 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-medium text-white">License status</div>
+                            <div className="text-xs text-[#8b949e]">
+                              {isDetectedLicense(result.repo.license)
+                                ? `Detected: ${result.repo.license}`
+                                : "No license detected"}
+                            </div>
                           </div>
-                          <div className="mt-2">
-                            <ScoreBar score={item.score} max={item.max} />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="bg-surface-2 border border-[#30363d] rounded-lg p-4">
-                        <div className="text-xs text-[#8b949e]">Languages (top)</div>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {result.snapshot.languagesTop.length ? (
-                            result.snapshot.languagesTop.map((l) => (
-                              <span
-                                key={l.name}
-                                className="text-xs text-[#c9d1d9] border border-[#30363d] bg-background/40 rounded-full px-2 py-1"
-                              >
-                                {l.name} {l.percent}%
-                              </span>
-                            ))
+                          {isDetectedLicense(result.repo.license) ? (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-[#2e7d47] bg-[#1f6f3a]/20 px-2 py-1 text-xs text-[#8ad8ab]">
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                              Healthy
+                            </span>
                           ) : (
-                            <span className="text-xs text-[#8b949e]">No language data</span>
+                            <span className="rounded-full border border-red-700/60 bg-red-950/30 px-2 py-1 text-xs text-red-300">Warning</span>
                           )}
                         </div>
                       </div>
+                    </div>
+                  </div>
 
-                      <div className="bg-surface-2 border border-[#30363d] rounded-lg p-4">
-                        <div className="text-xs text-[#8b949e]">Git activity (last 90 days)</div>
-                        <div className="mt-2 grid grid-cols-2 gap-3">
-                          <div>
-                            <div className="text-[10px] text-[#8b949e]">Commits</div>
-                            <div className="text-white font-semibold">
-                              {result.snapshot.git.commitsLast90Days}
-                              {result.snapshot.git.commitsLast90DaysCapped ? "+" : ""}
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="rounded-2xl border border-[#30363d] bg-surface-1 p-5">
+                      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+                        <Target className="h-4 w-4 text-[#58a6ff]" />
+                        Score Breakdown
+                      </div>
+                      <div className="h-72">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={breakdownChart} margin={{ top: 10, right: 10, left: -20, bottom: 10 }}>
+                            <CartesianGrid stroke="#22324a" strokeDasharray="3 3" vertical={false} />
+                            <XAxis dataKey="name" tick={{ fill: "#8b949e", fontSize: 11 }} axisLine={false} tickLine={false} />
+                            <YAxis tick={{ fill: "#8b949e", fontSize: 11 }} axisLine={false} tickLine={false} width={34} />
+                            <Tooltip
+                              cursor={{ fill: "rgba(88, 166, 255, 0.1)" }}
+                              contentStyle={{
+                                backgroundColor: "#0e1a2b",
+                                border: "1px solid #30363d",
+                                borderRadius: "12px",
+                                color: "#c9d1d9",
+                              }}
+                            />
+                            <Bar dataKey="score" radius={[8, 8, 0, 0]}>
+                              {breakdownChart.map((entry, index) => (
+                                <Cell key={`${entry.name}-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-[#30363d] bg-surface-1 p-5">
+                      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+                        <TrendingUp className="h-4 w-4 text-[#58a6ff]" />
+                        Languages and Activity
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                        <div className="h-48 rounded-xl border border-[#2a3344] bg-surface-2 p-2">
+                          {languageChart.length ? (
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie data={languageChart} dataKey="value" nameKey="name" innerRadius={35} outerRadius={56} paddingAngle={2}>
+                                  {languageChart.map((entry) => (
+                                    <Cell key={entry.name} fill={entry.color} />
+                                  ))}
+                                </Pie>
+                                <Tooltip
+                                  formatter={(value: number) => `${Number(value).toFixed(1)}%`}
+                                  contentStyle={{
+                                    backgroundColor: "#0e1a2b",
+                                    border: "1px solid #30363d",
+                                    borderRadius: "12px",
+                                    color: "#c9d1d9",
+                                  }}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                          ) : (
+                            <div className="flex h-full items-center justify-center text-xs text-[#8b949e]">No language data</div>
+                          )}
+                        </div>
+
+                        <div className="rounded-xl border border-[#2a3344] bg-surface-2 p-3">
+                          <div className="space-y-3">
+                            {activityBars.map((item) => (
+                              <div key={item.label}>
+                                <div className="mb-1 flex items-center justify-between text-xs text-[#8b949e]">
+                                  <span>{item.label}</span>
+                                  <span>{item.value}%</span>
+                                </div>
+                                <div className="h-2 overflow-hidden rounded-full bg-[#1f2a3d]">
+                                  <motion.div
+                                    className="h-full rounded-full bg-linear-to-r from-[#58a6ff] to-[#79c0ff]"
+                                    initial={{ width: 0 }}
+                                    animate={{ width: `${item.value}%` }}
+                                    transition={{ duration: 0.8, ease: "easeOut" }}
+                                  />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="mt-4 grid grid-cols-2 gap-3 border-t border-[#2a3344] pt-3 text-xs">
+                            <div>
+                              <div className="text-[#8b949e]">Conventional commits</div>
+                              <div className="font-semibold text-white">{formatPercent(result.snapshot.git.conventionalCommitRate)}</div>
                             </div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-[#8b949e]">Active days</div>
-                            <div className="text-white font-semibold">{result.snapshot.git.activeCommitDaysLast90Days}</div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-[#8b949e]">Branches</div>
-                            <div className="text-white font-semibold">{result.snapshot.git.branches}</div>
-                          </div>
-                          <div>
-                            <div className="text-[10px] text-[#8b949e]">PRs</div>
-                            <div className="text-white font-semibold">{result.snapshot.git.pullRequests}</div>
-                          </div>
-                          <div className="col-span-2">
-                            <div className="text-[10px] text-[#8b949e]">Conventional commits</div>
-                            <div className="text-white font-semibold">
-                              {formatPercent(result.snapshot.git.conventionalCommitRate)}
+                            <div>
+                              <div className="text-[#8b949e]">Contributors</div>
+                              <div className="font-semibold text-white">{result.snapshot.git.contributors}</div>
                             </div>
                           </div>
                         </div>
@@ -432,15 +576,43 @@ export default function AnalyzePage() {
                     </div>
                   </div>
 
-                  <div className="bg-surface-1 border border-[#30363d] rounded-xl p-5">
-                    <div className="text-sm font-semibold text-white">Personalized roadmap</div>
-                    <ol className="mt-3 space-y-2 text-sm text-[#c9d1d9] leading-relaxed list-decimal pl-5">
-                      {result.roadmap.map((step) => (
-                        <li key={step}>{step}</li>
-                      ))}
-                    </ol>
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                    <div className="rounded-2xl border border-[#30363d] bg-surface-1 p-5">
+                      <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-white">
+                        <Sparkles className="h-4 w-4 text-[#58a6ff]" />
+                        Summary
+                      </div>
+                      <p className="text-sm leading-relaxed text-[#c9d1d9]">{result.summary}</p>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        {getSummaryHighlights(result.summary).map((snippet, idx) => (
+                          <span key={`${snippet}-${idx}`} className="rounded-full border border-[#2a3344] bg-surface-2 px-3 py-1 text-xs text-[#c9d1d9]">
+                            {snippet}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="rounded-2xl border border-[#30363d] bg-surface-1 p-5">
+                      <div className="mb-4 flex items-center gap-2 text-sm font-semibold text-white">
+                        <GitBranch className="h-4 w-4 text-[#58a6ff]" />
+                        Professional Roadmap
+                      </div>
+
+                      <ol className="relative space-y-4 border-l border-[#2a3344] pl-5">
+                        {result.roadmap.map((step, idx) => (
+                          <li key={`${step}-${idx}`} className="relative">
+                            <span className="absolute -left-6.75 top-0 flex h-4 w-4 items-center justify-center rounded-full border border-[#58a6ff] bg-background text-[10px] text-[#79c0ff]">
+                              {idx + 1}
+                            </span>
+                            <div className="rounded-lg border border-[#2a3344] bg-surface-2 px-3 py-2 text-sm leading-relaxed text-[#c9d1d9]">
+                              {step}
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
                   </div>
-                </div>
+                </motion.div>
               ) : null}
             </div>
           </div>
