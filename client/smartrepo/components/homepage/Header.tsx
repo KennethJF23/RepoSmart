@@ -23,8 +23,14 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
   const ease: [number, number, number, number] = [0.22, 1, 0.36, 1];
 
   const isAuthed = Boolean(token);
+  const isHomePage = pathname === "/";
   const isHumanAnalyzePage = pathname === "/analyze";
   const isAiAnalyzePage = pathname === "/ai-analyze";
+
+  const navLinkClass = (isActive: boolean) =>
+    `transition-colors text-sm font-medium ${
+      isActive ? "text-[#58a6ff]" : "text-[#c9d1d9] hover:text-[#58a6ff]"
+    }`;
 
   const handleSignOut = () => {
     clearAuth();
@@ -85,20 +91,21 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
               <>
                 <Link
                   href="/"
-                  className="text-[#c9d1d9] hover:text-[#58a6ff] transition-colors text-sm font-medium"
+                  className={navLinkClass(isHomePage)}
+                  aria-current={isHomePage ? "page" : undefined}
                 >
                   Home
                 </Link>
                 <Link
                   href="/analyze"
-                  className="text-[#c9d1d9] hover:text-[#58a6ff] transition-colors text-sm font-medium"
+                  className={navLinkClass(isHumanAnalyzePage)}
                   aria-current={isHumanAnalyzePage ? "page" : undefined}
                 >
                   Human Analyzer
                 </Link>
                 <Link
                   href="/ai-analyze"
-                  className="text-[#c9d1d9] hover:text-[#58a6ff] transition-colors text-sm font-medium"
+                  className={navLinkClass(isAiAnalyzePage)}
                   aria-current={isAiAnalyzePage ? "page" : undefined}
                 >
                   AI Analyzer
@@ -126,19 +133,6 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
           <div className="flex items-center gap-2 sm:gap-3">
             {isAuthed ? (
               <>
-                <Button
-                  asChild
-                  className="bg-[#1f6feb] hover:bg-[#388bfd] text-white border-0 shadow-lg shadow-[#1f6feb]/20 px-3 sm:px-4 text-sm"
-                >
-                  <Link href="/analyze">Human Analyzer</Link>
-                </Button>
-                <Button
-                  asChild
-                  variant="outline"
-                  className="border-[#30363d] text-[#c9d1d9] hover:text-white hover:bg-surface-2 px-3 sm:px-4 text-sm"
-                >
-                  <Link href="/ai-analyze">AI Analyzer</Link>
-                </Button>
                 <Button
                   variant="ghost"
                   onClick={handleSignOut}
