@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
@@ -40,9 +40,7 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
     router.push("/");
   };
 
-  useEffect(() => {
-    setIsMobileMenuOpen(false);
-  }, [pathname, isAuthed]);
+  const closeMobileMenu = () => setIsMobileMenuOpen(false);
 
   const motionProps = shouldReduceMotion
     ? ({
@@ -229,6 +227,7 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
                   <div className="grid grid-cols-1 gap-2">
                 <Link
                   href="/"
+                  onClick={closeMobileMenu}
                   className={
                     "rounded-md border px-3 py-2 text-sm font-medium transition-colors " +
                     (isHomePage
@@ -242,6 +241,7 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
 
                 <Link
                   href="/analyze"
+                  onClick={closeMobileMenu}
                   className={
                     "rounded-md border px-3 py-2 text-sm font-medium transition-colors " +
                     (isHumanAnalyzePage
@@ -255,6 +255,7 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
 
                 <Link
                   href="/ai-analyze"
+                  onClick={closeMobileMenu}
                   className={
                     "rounded-md border px-3 py-2 text-sm font-medium transition-colors " +
                     (isAiAnalyzePage
@@ -278,25 +279,33 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
                   <div className="grid grid-cols-1 gap-2">
                 <a
                   href="#features"
+                  onClick={closeMobileMenu}
                   className="rounded-md border border-[#30363d] px-3 py-2 text-sm font-medium text-[#c9d1d9] transition-colors hover:text-[#58a6ff] hover:bg-surface-2"
                 >
                   Features
                 </a>
                 <a
                   href="#how-it-works"
+                  onClick={closeMobileMenu}
                   className="rounded-md border border-[#30363d] px-3 py-2 text-sm font-medium text-[#c9d1d9] transition-colors hover:text-[#58a6ff] hover:bg-surface-2"
                 >
                   How it Works
                 </a>
                 <Button
                   variant="ghost"
-                  onClick={onLogin}
+                  onClick={() => {
+                    closeMobileMenu();
+                    onLogin?.();
+                  }}
                   className="justify-start border border-[#30363d] text-[#c9d1d9] hover:text-white hover:bg-surface-2"
                 >
                   Sign in
                 </Button>
                 <Button
-                  onClick={onRegister}
+                  onClick={() => {
+                    closeMobileMenu();
+                    onRegister?.();
+                  }}
                   className="justify-start bg-[#1f6feb] hover:bg-[#388bfd] text-white border-0"
                 >
                   Sign up
