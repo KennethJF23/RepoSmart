@@ -1,11 +1,13 @@
 const axios = require("axios");
 
 async function verifyCaptcha(req, res, next) {
-  const captchaSecret = process.env.RECAPTCHA_SECRET_KEY;
+  const captchaSecret = process.env.RECAPTCHA_SECRET_KEY?.trim();
+  const isProd = process.env.NODE_ENV === "production";
 
   if (!captchaSecret) {
     return res.status(500).json({
-      message: "CAPTCHA is not configured on the server.",
+      message:
+        "CAPTCHA is not configured on the server (missing RECAPTCHA_SECRET_KEY in server/.env).",
     });
   }
 
@@ -33,10 +35,32 @@ async function verifyCaptcha(req, res, next) {
       },
     );
 
-    if (!data?.success) {
-      return res.status(400).json({
-        message: "CAPTCHA verification failed. Please try again.",
+    // Helpful for debugging in local dev; avoid logging tokens/secrets.
+    if (!isProd) {
+      console.log("CAPTCHA verify response:", {
+        success: data?.success,
+        hostname: data?.hostname,
+        challenge_ts: data?.challenge_ts,
+        errorCodes: data?.["error-codes"],
       });
+    }
+
+    if (!data?.success) {
+      const errorCodes = Array.isArray(data?.["error-codes"])
+        ? data["error-codes"]
+        : [];
+
+      return res.status(400).json(
+        isProd
+          ? { message: "CAPTCHA verification failed. Please try again." }
+          : {
+              message: "CAPTCHA verification failed.",
+              details: {
+                errorCodes,
+                hostname: data?.hostname,
+              },
+            },
+      );
     }
 
     return next();

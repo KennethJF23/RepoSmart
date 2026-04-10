@@ -122,7 +122,9 @@ export function AuthDialog({
     setLoginError(null);
 
     if (!recaptchaSiteKey) {
-      setLoginError("CAPTCHA is not configured. Please contact support.");
+      setLoginError(
+        "CAPTCHA site key is not configured (NEXT_PUBLIC_RECAPTCHA_SITE_KEY).",
+      );
       return;
     }
 
@@ -158,7 +160,9 @@ export function AuthDialog({
     setRegisterError(null);
 
     if (!recaptchaSiteKey) {
-      setRegisterError("CAPTCHA is not configured. Please contact support.");
+      setRegisterError(
+        "CAPTCHA site key is not configured (NEXT_PUBLIC_RECAPTCHA_SITE_KEY).",
+      );
       return;
     }
 

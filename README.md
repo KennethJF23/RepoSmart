@@ -69,6 +69,10 @@ MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/<db>
 # Auth
 JWT_SECRET=replace-with-a-long-random-secret
 
+# CAPTCHA (Google reCAPTCHA)
+# Used by the backend to verify the token sent from the frontend.
+RECAPTCHA_SECRET_KEY=your_recaptcha_secret_key
+
 # GitHub API
 GITHUB_API_BASE=https://api.github.com
 GITHUB_API_VERSION=2022-11-28
@@ -103,6 +107,10 @@ Create `client/smartrepo/.env.local`:
 
 ```bash
 NEXT_PUBLIC_API_URL=http://localhost:5000
+
+# CAPTCHA (Google reCAPTCHA)
+# Used by the frontend to render the CAPTCHA widget.
+NEXT_PUBLIC_RECAPTCHA_SITE_KEY=your_recaptcha_site_key
 ```
 
 You can also start from the template at `client/smartrepo/.env.example`.

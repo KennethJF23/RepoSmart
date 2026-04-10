@@ -70,12 +70,14 @@ export async function postJson<T>(path: string, body: unknown, options: PostJson
     //     ? (data as { message: string }).message
     //     : `Request failed (${res.status})`;
 
-    const message =
-      data?.message ||
-      data?.error ||
-      `Request failed (${res.status})`;
+    const message = data?.message || data?.error || `Request failed (${res.status})`;
 
-    throw new Error(message);
+    const detailsSuffix =
+      process.env.NODE_ENV !== "production" && data?.details
+        ? ` Details: ${JSON.stringify(data.details)}`
+        : "";
+
+    throw new Error(`${message}${detailsSuffix}`);
   }
 
   return data as T;
