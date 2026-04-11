@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Github } from "lucide-react";
 import { useGoogleAuth } from "@/services/googleAuth";
+import { useGithubAuth } from "@/services/githubAuth";
 
 // Custom Google SVG Icon
 export const GoogleIcon = ({ className }: { className?: string }) => (
@@ -32,7 +33,8 @@ export const GoogleIcon = ({ className }: { className?: string }) => (
 );
 
 export const SocialAuthButtons = () => {
-  const { login } = useGoogleAuth();
+  const { login: loginWithGoogle } = useGoogleAuth();
+  const { login: loginWithGithub } = useGithubAuth();
 
   return (
     <>
@@ -52,17 +54,17 @@ export const SocialAuthButtons = () => {
         <Button
           variant="outline"
           type="button"
-          onClick={() => login()}
+          onClick={() => loginWithGoogle()}
           className="w-full border-[#30363d] bg-surface-2 text-white hover:bg-surface-3 hover:border-[#58a6ff]"
         >
           <GoogleIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />
           Google
         </Button>
 
-        {/* GITHUB BUTTON (future use) */}
         <Button
           variant="outline"
           type="button"
+          onClick={() => loginWithGithub()}
           className="w-full border-[#30363d] bg-surface-2 text-white hover:bg-surface-3 hover:border-[#58a6ff]"
         >
           <Github className="w-4 h-4 sm:w-5 sm:h-5 mr-2" />

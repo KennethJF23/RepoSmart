@@ -37,6 +37,13 @@ If you suspect credentials were exposed (e.g., tokens, database URIs, JWT secret
 - Backend validates CAPTCHA tokens server-side using `RECAPTCHA_SECRET_KEY`.
 - Frontend must provide `NEXT_PUBLIC_RECAPTCHA_SITE_KEY` so users can complete the CAPTCHA challenge before auth requests are sent.
 
+## OAuth credential handling
+
+- Google and GitHub OAuth client IDs may be exposed to the frontend by design.
+- OAuth client secrets are sensitive and must remain server-only (for example, `GITHUB_OAUTH_CLIENT_SECRET`).
+- Never commit OAuth client secrets to the repository or include them in frontend environment files.
+- If an OAuth client secret is exposed, rotate it immediately in the provider console and update server environment variables.
+
 ## Coordinated disclosure
 
 We’ll work with you to validate the report and coordinate a fix and disclosure timeline.
