@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { register, login } = require("../controllers/auth.controller");
 const { googleAuth } = require("../controllers/googleAuth.controller");
+const { githubAuth } = require("../controllers/githubAuth.controller");
 const { sendOTP, verifyOTP, resetPassword } = require("../controllers/forgotPassword.controller");
 const verifyCaptcha = require("../middleware/captcha.middleware");
 
@@ -17,7 +18,20 @@ router.get("/google-client-id", (req, res) => {
 
 	res.json({ clientId });
 });
+
+// Exposes GitHub OAuth client id to the frontend.
+// Note: client id is not a secret (unlike the client secret).
+router.get("/github-client-id", (req, res) => {
+	const clientId = process.env.GITHUB_OAUTH_CLIENT_ID;
+	if (!clientId) {
+		return res.status(500).json({ message: "GITHUB_OAUTH_CLIENT_ID is not configured" });
+	}
+
+	res.json({ clientId });
+});
+
 router.post("/google", googleAuth);
+router.post("/github", githubAuth);
 router.post("/forgot-password", sendOTP);
 router.post("/verify-otp", verifyOTP);
 router.post("/reset-password", resetPassword);

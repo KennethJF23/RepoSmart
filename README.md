@@ -83,6 +83,11 @@ GITHUB_TOKEN=github_pat_or_ghp_token_here
 # Google OAuth (required by the frontend; client id is NOT a secret)
 GOOGLE_CLIENT_ID=your_google_oauth_client_id
 
+# GitHub OAuth (required for GitHub sign in/sign up)
+# Client id is public; client secret must remain server-only.
+GITHUB_OAUTH_CLIENT_ID=your_github_oauth_client_id
+GITHUB_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
+
 # Email (password reset / OTP) — Mailtrap SMTP
 MAILTRAP_HOST=sandbox.smtp.mailtrap.io
 MAILTRAP_PORT=2525
@@ -124,6 +129,16 @@ Base URL: `http://localhost:5000`
 	- Returns: `{ id, username, email, token }`
 - `POST /api/auth/login`
 	- Body: `{ "email": string, "password": string }`
+	- Returns: `{ id, username, email, token }`
+- `GET /api/auth/google-client-id`
+	- Returns: `{ clientId }`
+- `GET /api/auth/github-client-id`
+	- Returns: `{ clientId }`
+- `POST /api/auth/google`
+	- Body: `{ "access_token": string }`
+	- Returns: `{ id, username, email, token }`
+- `POST /api/auth/github`
+	- Body: `{ "code": string, "redirectUri": string }`
 	- Returns: `{ id, username, email, token }`
 - `POST /api/repo/analyze`
 	- Auth: `Authorization: Bearer <token>`
