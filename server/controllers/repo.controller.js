@@ -1,6 +1,24 @@
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const fsp = require("fs/promises");
+const { pipeline } = require("stream/promises");
+
+const axios = require("axios");
+const unzipper = require("unzipper");
 
 const { redisGetJson, redisSetJson } = require("../config/redis");
+const MalwareKeyword = require("../models/malwareKeyword.model");
+
+// In-memory cache to avoid repeated MongoDB calls.
+// This is process-local (each Node instance caches independently).
+let malwareKeywordCache = {
+  loadedAtMs: 0,
+  ttlMs: 5 * 60 * 1000,
+  docs: null,
+  compiled: null,
+};
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -141,6 +159,218 @@ function buildAiScanCacheKey(owner, repo, model) {
   const baseKey = `ai-scan:v1:${String(owner).toLowerCase()}/${String(repo).toLowerCase()}:${String(model || "").toLowerCase()}`;
   const digest = crypto.createHash("sha256").update(baseKey).digest("hex");
   return `ai-scan:v1:${digest}`;
+}
+
+function getMalwareScanCacheTtlSeconds() {
+  const raw = process.env.REDIS_MALWARE_SCAN_TTL_SECONDS;
+  if (!isNonEmptyString(raw)) return 900;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 900;
+  return Math.floor(parsed);
+}
+
+function buildMalwareScanCacheKey(owner, repo) {
+  // v2: includes deterministic verdict in payload.
+  const baseKey = `malware-scan:v2:${String(owner).toLowerCase()}/${String(repo).toLowerCase()}`;
+  const digest = crypto.createHash("sha256").update(baseKey).digest("hex");
+  return `malware-scan:v2:${digest}`;
+}
+
+function textIncludesAny(haystack, needles) {
+  if (!isNonEmptyString(haystack) || !Array.isArray(needles) || needles.length === 0) return false;
+  const text = safeLower(haystack);
+  return needles.some((n) => isNonEmptyString(n) && text.includes(safeLower(n)));
+}
+
+function computeMalwareVerdict({ totalScore, matches, repoMeta, readmeText, filePathsText, aiParsed }) {
+  const roundedScore = Math.round(safeNumber(totalScore, 0) * 100) / 100;
+  const matchList = Array.isArray(matches) ? matches : [];
+  const categories = new Set(matchList.map((m) => (m && typeof m.category === "string" ? m.category : "generic")));
+
+  const topics = Array.isArray(repoMeta && repoMeta.topics) ? repoMeta.topics.join(" ") : "";
+  const description = repoMeta && typeof repoMeta.description === "string" ? repoMeta.description : "";
+  const repoName = repoMeta && (repoMeta.full_name || repoMeta.name) ? String(repoMeta.full_name || repoMeta.name) : "";
+  const combinedMetaText = [repoName, topics, description, readmeText].filter(Boolean).join("\n");
+  const filePathCorpus = isNonEmptyString(filePathsText) ? String(filePathsText) : "";
+
+  const datasetTerms = [
+    "dataset",
+    "datasets",
+    "sample",
+    "samples",
+    "collection",
+    "corpus",
+    "training data",
+    "ioc",
+    "iocs",
+    "indicator",
+    "indicators",
+    "signatures",
+  ];
+  const malwareTerms = [
+    "malware",
+    "ransomware",
+    "stealer",
+    "botnet",
+    "trojan",
+    "virus",
+    "payload",
+    "backdoor",
+    "keylogger",
+    "rat",
+    "spyware",
+    "phishing",
+    "exploit",
+    "c2",
+    "command and control",
+  ];
+
+  const fileSignals = [".exe", ".dll", ".apk", ".bin", ".scr"];
+  const hasSuspiciousFiles = fileSignals.some((ext) => safeLower(filePathCorpus).includes(ext));
+
+  const datasetSignal =
+    (textIncludesAny(combinedMetaText, datasetTerms) && textIncludesAny(combinedMetaText, malwareTerms)) ||
+    (hasSuspiciousFiles && textIncludesAny(combinedMetaText, ["sample", "samples", "collection"]));
+
+  const highSignalCategories = new Set([
+    "combination_high_risk",
+    "credential_access",
+    "keylogging",
+    "data_exfiltration",
+    "command_execution",
+    "persistence",
+  ]);
+
+  const hasHighSignalCategory = Array.from(highSignalCategories).some((c) => categories.has(c));
+  const hasCombinationHighRisk = categories.has("combination_high_risk");
+  const matchCount = matchList.length;
+
+  let level = "SAFE";
+  const reasons = [];
+
+  // Priority 1: MALICIOUS
+  if (roundedScore >= 10 || hasCombinationHighRisk || (hasHighSignalCategory && roundedScore >= 4)) {
+    level = "MALICIOUS";
+    reasons.push("Strong malicious indicators detected.");
+    if (roundedScore >= 10) reasons.push("High aggregate indicator score.");
+    if (hasCombinationHighRisk) reasons.push("High-risk indicator combination detected.");
+    if (hasHighSignalCategory) reasons.push("High-signal categories matched (execution/exfil/credentials/etc.).");
+  }
+
+  // Priority 2: DANGEROUS_DATASET (independent of score)
+  else if (datasetSignal) {
+    level = "DANGEROUS_DATASET";
+    reasons.push("Repository contains malware samples or dataset.");
+    if (hasSuspiciousFiles) reasons.push("Suspicious file extensions appear in repository paths.");
+  }
+
+  // Priority 3: SUSPICIOUS
+  else if (roundedScore >= 3 || matchCount >= 3) {
+    level = "SUSPICIOUS";
+    reasons.push("Multiple suspicious indicators matched.");
+  }
+
+  // Default: SAFE
+  else {
+    reasons.push("Few or no indicators matched.");
+  }
+
+  const aiMalicious = aiParsed && typeof aiParsed.malicious === "boolean" ? aiParsed.malicious : null;
+  const aiConfidence = aiParsed && typeof aiParsed.confidence === "number" ? aiParsed.confidence : null;
+  if (aiMalicious === true && typeof aiConfidence === "number" && aiConfidence >= 0.7 && level !== "MALICIOUS") {
+    level = "MALICIOUS";
+    reasons.push("AI verdict indicated malicious (high confidence).");
+  }
+
+  const mapping = {
+    SAFE: { label: "SAFE", emoji: "🟢" },
+    SUSPICIOUS: { label: "SUSPICIOUS", emoji: "🟡" },
+    MALICIOUS: { label: "MALICIOUS", emoji: "🔴" },
+    DANGEROUS_DATASET: { label: "DANGEROUS DATASET", emoji: "🟠" },
+  };
+
+  const view = mapping[level] || mapping.SAFE;
+  return {
+    level,
+    label: view.label,
+    emoji: view.emoji,
+    score: roundedScore,
+    reasons: reasons.filter(Boolean).slice(0, 5),
+  };
+}
+
+function safeLower(value) {
+  return typeof value === "string" ? value.toLowerCase() : "";
+}
+
+function buildMetadataCorpus({ repoMeta, languages, readmeText, treeInfo }) {
+  const topics = Array.isArray(repoMeta && repoMeta.topics) ? repoMeta.topics : [];
+  const languageNames = languages && typeof languages === "object" ? Object.keys(languages) : [];
+  const filePaths = Array.isArray(treeInfo && treeInfo.paths) ? treeInfo.paths : [];
+
+  // Keep payload bounded.
+  const cappedPaths = filePaths.slice(0, 500);
+  const cappedReadme = typeof readmeText === "string" ? readmeText.slice(0, 12000) : "";
+
+  return {
+    name: [repoMeta && repoMeta.full_name, repoMeta && repoMeta.name].filter(Boolean).join(" "),
+    description: repoMeta && repoMeta.description ? String(repoMeta.description) : "",
+    homepage: repoMeta && repoMeta.homepage ? String(repoMeta.homepage) : "",
+    topics: topics.join(" "),
+    languages: languageNames.join(" "),
+    readme: cappedReadme,
+    filePaths: cappedPaths.join("\n"),
+  };
+}
+
+function keywordMatchesCorpus(keyword, corpusByField) {
+  if (!keyword || typeof keyword !== "object") return { matched: false, fields: [] };
+
+  const pattern = typeof keyword.pattern === "string" ? keyword.pattern.trim() : "";
+  if (!pattern) return { matched: false, fields: [] };
+
+  const mode = keyword.matchMode === "regex" ? "regex" : "substring";
+  const fieldsMatched = [];
+
+  if (mode === "regex") {
+    let re;
+    try {
+      re = new RegExp(pattern, "i");
+    } catch {
+      return { matched: false, fields: [] };
+    }
+
+    for (const [field, text] of Object.entries(corpusByField)) {
+      if (typeof text !== "string" || !text) continue;
+      if (re.test(text)) fieldsMatched.push(field);
+    }
+
+    return { matched: fieldsMatched.length > 0, fields: fieldsMatched };
+  }
+
+  const needle = safeLower(pattern);
+  if (!needle) return { matched: false, fields: [] };
+
+  for (const [field, text] of Object.entries(corpusByField)) {
+    if (typeof text !== "string" || !text) continue;
+    if (safeLower(text).includes(needle)) fieldsMatched.push(field);
+  }
+
+  return { matched: fieldsMatched.length > 0, fields: fieldsMatched };
+}
+
+function tryParseJsonObject(text) {
+  if (!isNonEmptyString(text)) return null;
+  const trimmed = text.trim();
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start < 0 || end < 0 || end <= start) return null;
+  try {
+    const parsed = JSON.parse(trimmed.slice(start, end + 1));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function getOpenRouterApiKey() {
@@ -329,6 +559,351 @@ function getGitHubHeaders() {
   }
 
   return headers;
+}
+
+function isRelevantSourceFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  return [".js", ".ts", ".py", ".sh", ".json", ".env"].includes(ext);
+}
+
+function normalizeRepoRelativePath(rootDir, absoluteFilePath) {
+  const rel = path.relative(rootDir, absoluteFilePath);
+  // Prefer forward slashes in API responses for portability.
+  return rel.split(path.sep).join("/");
+}
+
+function looksBinary(buffer) {
+  // Heuristic: treat NUL bytes as a strong binary indicator.
+  if (!Buffer.isBuffer(buffer)) return false;
+  const sample = buffer.subarray(0, Math.min(buffer.length, 8000));
+  return sample.includes(0);
+}
+
+/**
+ * Download a GitHub repository zipball to disk.
+ * Returns: { tempBase, zipPath }
+ *
+ * Required structure: downloadZip(url)
+ */
+async function downloadZip(zipUrl) {
+  const tempBase = await fsp.mkdtemp(path.join(os.tmpdir(), "reposmart-zipscan-"));
+  const zipPath = path.join(tempBase, "repo.zip");
+
+  try {
+    console.log(`[ZIPSCAN] Downloading ZIP: ${zipUrl}`);
+    const res = await axios.get(zipUrl, {
+      responseType: "stream",
+      headers: getGitHubHeaders(),
+      timeout: 60_000,
+      maxRedirects: 5,
+      validateStatus: () => true,
+    });
+
+    if (res.status < 200 || res.status >= 300) {
+      const err = new Error(`Download failed (HTTP ${res.status}).`);
+      err.statusCode = res.status;
+      throw err;
+    }
+
+    await pipeline(res.data, fs.createWriteStream(zipPath));
+    const stat = await fsp.stat(zipPath).catch(() => null);
+    const zipBytes = stat && typeof stat.size === "number" ? stat.size : 0;
+    console.log(`[ZIPSCAN] ZIP created: ${zipPath} (${zipBytes} bytes)`);
+    return { tempBase, zipPath, zipBytes };
+  } catch (err) {
+    // Best-effort cleanup of temp directory if download fails.
+    try {
+      await fsp.rm(tempBase, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+
+    const wrapped = new Error(
+      err instanceof Error && err.message ? err.message : "Unable to download repository ZIP.",
+    );
+    wrapped.statusCode = err && typeof err.statusCode === "number" ? err.statusCode : 502;
+    throw wrapped;
+  }
+}
+
+/**
+ * Extract a zip file into a new directory.
+ * Returns the directory that contains repository contents.
+ *
+ * Required structure: extractZip(zipPath)
+ */
+async function extractZip(zipPath) {
+  const destinationDir = path.join(path.dirname(zipPath), "extracted");
+  await fsp.mkdir(destinationDir, { recursive: true });
+
+  // Stream extraction (avoids loading the whole ZIP into memory).
+  await fs
+    .createReadStream(zipPath)
+    .pipe(unzipper.Extract({ path: destinationDir }))
+    .promise();
+
+  // GitHub zipball usually contains a single root folder.
+  const entries = await fsp.readdir(destinationDir, { withFileTypes: true });
+  const dirs = entries.filter((e) => e.isDirectory());
+  if (dirs.length === 1) {
+    return path.join(destinationDir, dirs[0].name);
+  }
+
+  return destinationDir;
+}
+
+/**
+ * Load malware keywords from MongoDB, with a small in-memory cache.
+ * Returns compiled matchers for substring and regex patterns.
+ */
+async function getMalwareKeywordsFromDB() {
+  const now = Date.now();
+  if (malwareKeywordCache.compiled && now - malwareKeywordCache.loadedAtMs < malwareKeywordCache.ttlMs) {
+    return malwareKeywordCache.compiled;
+  }
+
+  const docs = await getMalwareKeywordDocsFromDB();
+
+  const substringPatterns = [];
+  const regexPatterns = [];
+
+  for (const doc of Array.isArray(docs) ? docs : []) {
+    if (!doc || typeof doc.pattern !== "string") continue;
+    const pattern = doc.pattern.trim();
+    if (!pattern) continue;
+
+    const weight = safeNumber(doc.weight, 1);
+    const category = typeof doc.category === "string" && doc.category.trim().length > 0 ? doc.category.trim() : "generic";
+    const source = typeof doc.source === "string" && doc.source.trim().length > 0 ? doc.source.trim() : "custom";
+
+    const matchMode = doc.matchMode === "regex" ? "regex" : "substring";
+    if (matchMode === "substring") {
+      substringPatterns.push({ pattern, lower: pattern.toLowerCase(), weight, category, matchMode, source });
+      continue;
+    }
+
+    try {
+      // Case-insensitive by default to catch common variants.
+      regexPatterns.push({ pattern, regex: new RegExp(pattern, "i"), weight, category, matchMode, source });
+    } catch {
+      // Skip invalid regex entries rather than failing the entire scan.
+    }
+  }
+
+  const compiled = {
+    substrings: substringPatterns,
+    regexes: regexPatterns,
+  };
+
+  malwareKeywordCache = {
+    ...malwareKeywordCache,
+    loadedAtMs: now,
+    compiled,
+  };
+
+  return compiled;
+}
+
+/**
+ * Load raw MalwareKeyword documents from MongoDB with the same cache window.
+ * This is used by metadata scan (keywordMatchesCorpus).
+ */
+async function getMalwareKeywordDocsFromDB() {
+  const now = Date.now();
+  if (malwareKeywordCache.docs && now - malwareKeywordCache.loadedAtMs < malwareKeywordCache.ttlMs) {
+    return malwareKeywordCache.docs;
+  }
+
+  let docs;
+  try {
+    docs = await MalwareKeyword.find({ enabled: true }).lean();
+  } catch (err) {
+    const wrapped = new Error(
+      err instanceof Error && err.message ? err.message : "Unable to fetch malware keywords from database.",
+    );
+    wrapped.statusCode = 500;
+    throw wrapped;
+  }
+
+  malwareKeywordCache = {
+    ...malwareKeywordCache,
+    loadedAtMs: now,
+    docs,
+    // compiled is still valid only if derived from same docs; force refresh next time.
+    compiled: null,
+  };
+
+  return docs;
+}
+
+/**
+ * Detect keyword matches for a file's content.
+ * Returns an array of matched keyword strings.
+ */
+function detectMatches(fileContent, keywords) {
+  if (!isNonEmptyString(fileContent)) return [];
+  if (!keywords || typeof keywords !== "object") return [];
+
+  const matched = [];
+  const seen = new Set();
+  const lower = fileContent.toLowerCase();
+
+  const substrings = Array.isArray(keywords.substrings) ? keywords.substrings : [];
+  for (const item of substrings) {
+    if (!item || typeof item.lower !== "string" || typeof item.pattern !== "string") continue;
+    if (item.lower && lower.includes(item.lower) && !seen.has(item.pattern)) {
+      seen.add(item.pattern);
+      matched.push(item);
+    }
+  }
+
+  const regexes = Array.isArray(keywords.regexes) ? keywords.regexes : [];
+  for (const item of regexes) {
+    if (!item || !(item.regex instanceof RegExp) || typeof item.pattern !== "string") continue;
+    try {
+      if (item.regex.test(fileContent) && !seen.has(item.pattern)) {
+        seen.add(item.pattern);
+        matched.push(item);
+      }
+    } catch {
+      // Ignore pathological regex runtime errors.
+    }
+  }
+
+  return matched;
+}
+
+/**
+ * Recursively scan directory files, limited to relevant extensions and size.
+ * @param {string} directoryRoot
+ * @param {{substrings: string[], regexes: Array<{pattern: string, regex: RegExp}>}} keywords
+ */
+async function scanFiles(directoryRoot, keywords) {
+  const maxFileBytes = 2 * 1024 * 1024;
+
+  let totalFilesScanned = 0;
+  const suspiciousFiles = [];
+  const globalMatches = new Map();
+
+  async function walk(currentDir) {
+    let entries;
+    try {
+      entries = await fsp.readdir(currentDir, { withFileTypes: true });
+    } catch {
+      // Directory unreadable; skip.
+      return;
+    }
+
+    for (const entry of entries) {
+      const fullPath = path.join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+        continue;
+      }
+
+      if (!entry.isFile()) continue;
+      if (!isRelevantSourceFile(fullPath)) continue;
+
+      let stat;
+      try {
+        stat = await fsp.stat(fullPath);
+      } catch {
+        continue;
+      }
+
+      if (!stat || typeof stat.size !== "number" || stat.size <= 0) continue;
+      if (stat.size > maxFileBytes) continue;
+
+      let buffer;
+      try {
+        buffer = await fsp.readFile(fullPath);
+      } catch {
+        // File read error; skip.
+        continue;
+      }
+
+      if (looksBinary(buffer)) continue;
+
+      let content;
+      try {
+        content = buffer.toString("utf8");
+      } catch {
+        continue;
+      }
+
+      totalFilesScanned += 1;
+      const matchedItems = detectMatches(content, keywords);
+      if (matchedItems.length > 0) {
+        const matchedKeywords = matchedItems.map((m) => m.pattern);
+        suspiciousFiles.push({
+          filePath: normalizeRepoRelativePath(directoryRoot, fullPath),
+          matchedKeywords,
+        });
+
+        for (const match of matchedItems) {
+          if (!match || typeof match.pattern !== "string") continue;
+          const prev = globalMatches.get(match.pattern);
+          const next = {
+            pattern: match.pattern,
+            matchMode: match.matchMode || "substring",
+            category: match.category || "generic",
+            weight: safeNumber(match.weight, 1),
+            source: match.source || "custom",
+            hitCount: safeNumber(prev && prev.hitCount, 0) + 1,
+          };
+          globalMatches.set(match.pattern, next);
+        }
+      }
+    }
+  }
+
+  await walk(directoryRoot);
+
+  const matches = Array.from(globalMatches.values()).sort((a, b) => safeNumber(b.weight, 0) - safeNumber(a.weight, 0));
+  const totalScore = matches.reduce((sum, m) => sum + safeNumber(m.weight, 0), 0);
+
+  return { totalFilesScanned, suspiciousFiles, matches, totalScore };
+}
+
+function mergeMetadataAndZipMatches(metadataMatches, zipMatches) {
+  const merged = new Map();
+
+  for (const m of Array.isArray(metadataMatches) ? metadataMatches : []) {
+    if (!m || typeof m.pattern !== "string") continue;
+    merged.set(m.pattern, {
+      pattern: m.pattern,
+      matchMode: m.matchMode || "substring",
+      category: m.category || "generic",
+      weight: safeNumber(m.weight, 0),
+      fields: Array.isArray(m.fields) ? Array.from(new Set(m.fields)) : [],
+      source: m.source || "custom",
+    });
+  }
+
+  for (const z of Array.isArray(zipMatches) ? zipMatches : []) {
+    if (!z || typeof z.pattern !== "string") continue;
+    const prev = merged.get(z.pattern);
+    if (prev) {
+      const fields = new Set(Array.isArray(prev.fields) ? prev.fields : []);
+      fields.add("zip");
+      merged.set(z.pattern, { ...prev, fields: Array.from(fields) });
+    } else {
+      merged.set(z.pattern, {
+        pattern: z.pattern,
+        matchMode: z.matchMode || "substring",
+        category: z.category || "generic",
+        weight: safeNumber(z.weight, 0),
+        fields: ["zip"],
+        source: z.source || "custom",
+      });
+    }
+  }
+
+  const list = Array.from(merged.values());
+  list.sort((a, b) => safeNumber(b.weight, 0) - safeNumber(a.weight, 0));
+  const totalScore = list.reduce((sum, m) => sum + safeNumber(m.weight, 0), 0);
+  return { matches: list, totalScore };
 }
 
 async function githubRequestJson(path, query) {
@@ -1316,5 +1891,590 @@ exports.aiScanRepository = async (req, res) => {
     }
 
     res.status(status).json({ message });
+  }
+};
+
+exports.malwareCheckRepository = async (req, res) => {
+  try {
+    const url = (req.body && (req.body.url || req.body.input)) || "";
+    const { owner, repo } = parseGithubRepoInput(url);
+
+    const cacheKey = buildMalwareScanCacheKey(owner, repo);
+    const cached = await redisGetJson(cacheKey);
+    if (cached && typeof cached === "object") {
+      res.set("X-RepoSmart-Cache", "HIT");
+      if (cached.input && typeof cached.input === "object") {
+        cached.input = { ...cached.input, url };
+      }
+
+      // Always return a deterministic verdict.
+      if (!cached.verdict || typeof cached.verdict !== "object") {
+        const cachedScore =
+          cached.patternMatch && typeof cached.patternMatch === "object" ? cached.patternMatch.totalScore : 0;
+        const cachedMatches =
+          cached.patternMatch && typeof cached.patternMatch === "object" ? cached.patternMatch.matches : [];
+        const cachedRepo = cached.repo && typeof cached.repo === "object" ? cached.repo : {};
+        const cachedAi = cached.ai && typeof cached.ai === "object" ? cached.ai : null;
+        const cachedFilePathsText = cached.filePaths || (cached.snapshot && cached.snapshot.filePaths) || "";
+
+        cached.verdict = computeMalwareVerdict({
+          totalScore: safeNumber(cachedScore, 0),
+          matches: Array.isArray(cachedMatches) ? cachedMatches : [],
+          repoMeta: {
+            topics: Array.isArray(cachedRepo.topics) ? cachedRepo.topics : [],
+            description: typeof cachedRepo.description === "string" ? cachedRepo.description : "",
+          },
+          readmeText: "",
+          filePathsText: typeof cachedFilePathsText === "string" ? cachedFilePathsText : "",
+          aiParsed: cachedAi && cachedAi.parsed ? cachedAi.parsed : null,
+        });
+
+        await redisSetJson(cacheKey, cached, getMalwareScanCacheTtlSeconds());
+      }
+
+      return res.json(cached);
+    }
+
+    const repoMetaResp = await githubRequestJson(`/repos/${owner}/${repo}`);
+    const repoMeta = repoMetaResp.data;
+
+    const languagesResp = await githubRequestJson(`/repos/${owner}/${repo}/languages`);
+    const languages = languagesResp.data || {};
+
+    let readmeText = "";
+    try {
+      const readmeResp = await githubRequestText(
+        `/repos/${owner}/${repo}/readme`,
+        undefined,
+        "application/vnd.github.raw",
+      );
+      readmeText = readmeResp.data;
+    } catch {
+      readmeText = "";
+    }
+
+    let treeInfo = {
+      fileCount: 0,
+      directoryCount: 0,
+      truncated: false,
+      topLevelCounts: {},
+      paths: [],
+    };
+
+    try {
+      const treeResp = await githubRequestJson(`/repos/${owner}/${repo}/git/trees/${repoMeta.default_branch}`, {
+        recursive: 1,
+      });
+
+      const tree = treeResp.data;
+      const items = tree && Array.isArray(tree.tree) ? tree.tree : [];
+
+      const filePaths = items
+        .filter((item) => item && item.type === "blob" && typeof item.path === "string")
+        .map((item) => item.path);
+
+      const dirCount = items.filter((item) => item && item.type === "tree").length;
+
+      treeInfo = {
+        fileCount: filePaths.length,
+        directoryCount: dirCount,
+        truncated: Boolean(tree && tree.truncated),
+        topLevelCounts: countByTopLevelFolder(filePaths),
+        paths: filePaths,
+      };
+    } catch {
+      // keep going
+    }
+
+    const corpusByField = buildMetadataCorpus({ repoMeta, languages, readmeText, treeInfo });
+
+    const keywords = await MalwareKeyword.find({ enabled: true }).lean();
+
+    const matches = [];
+    let totalScore = 0;
+
+    for (const keyword of keywords) {
+      const result = keywordMatchesCorpus(keyword, corpusByField);
+      if (!result.matched) continue;
+
+      const weight = safeNumber(keyword.weight, 0);
+      totalScore += weight;
+      matches.push({
+        pattern: keyword.pattern,
+        matchMode: keyword.matchMode || "substring",
+        category: keyword.category || "generic",
+        weight,
+        fields: result.fields,
+        source: keyword.source || "custom",
+      });
+    }
+
+    matches.sort((a, b) => b.weight - a.weight);
+
+    const metadata = {
+      input: { owner, repo, url },
+      repo: {
+        fullName: repoMeta.full_name,
+        htmlUrl: repoMeta.html_url,
+        description: repoMeta.description,
+        defaultBranch: repoMeta.default_branch,
+        isFork: Boolean(repoMeta.fork),
+        visibility: repoMeta.visibility,
+        stars: safeNumber(repoMeta.stargazers_count, 0),
+        forks: safeNumber(repoMeta.forks_count, 0),
+        watchers: safeNumber(repoMeta.watchers_count, 0),
+        openIssues: safeNumber(repoMeta.open_issues_count, 0),
+        license: repoMeta.license ? repoMeta.license.spdx_id : null,
+        topics: Array.isArray(repoMeta.topics) ? repoMeta.topics : [],
+        createdAt: repoMeta.created_at,
+        updatedAt: repoMeta.updated_at,
+        pushedAt: repoMeta.pushed_at,
+        sizeKb: safeNumber(repoMeta.size, 0),
+      },
+      snapshot: {
+        files: {
+          fileCount: treeInfo.fileCount,
+          directoryCount: treeInfo.directoryCount,
+          truncated: treeInfo.truncated,
+          topLevelCounts: treeInfo.topLevelCounts,
+        },
+        languages: Object.keys(languages),
+        readme: {
+          present: isNonEmptyString(readmeText),
+          wordCount: isNonEmptyString(readmeText) ? readmeText.split(/\s+/).filter(Boolean).length : 0,
+        },
+      },
+      keywordModel: {
+        enabledCount: keywords.length,
+      },
+    };
+
+    let ai = null;
+    try {
+      const aiPrompt =
+        "You are RepoSmart Malware Detector. You only have GitHub metadata and keyword matches; you do NOT have code content. " +
+        "Decide if the repository is likely malicious. Output STRICT JSON ONLY with fields: " +
+        "malicious (boolean), confidence (number 0..1), reasoning (string), indicators (string[]). " +
+        "Be conservative: if evidence is weak, set malicious=false and lower confidence.\n\n" +
+        `TOTAL_PATTERN_SCORE: ${totalScore}\n` +
+        `TOP_MATCHES_JSON: ${JSON.stringify(matches.slice(0, 25), null, 2)}\n` +
+        `METADATA_JSON: ${JSON.stringify(metadata, null, 2)}`;
+
+      const generated = await openRouterGenerateText(aiPrompt);
+      ai = {
+        model: generated.model,
+        output: generated.text,
+        parsed: tryParseJsonObject(generated.text),
+      };
+    } catch {
+      // OpenRouter isn't mandatory for the endpoint; we still return keyword matches.
+      ai = null;
+    }
+
+    const verdict = computeMalwareVerdict({
+      totalScore,
+      matches,
+      repoMeta,
+      readmeText,
+      filePathsText: corpusByField.filePaths,
+      aiParsed: ai && ai.parsed ? ai.parsed : null,
+    });
+
+    const payload = {
+      ...metadata,
+      verdict,
+      patternMatch: {
+        totalScore: Math.round(totalScore * 100) / 100,
+        matches: matches.slice(0, 100),
+      },
+      ai,
+    };
+
+    await redisSetJson(cacheKey, payload, getMalwareScanCacheTtlSeconds());
+
+    res.set("X-RepoSmart-Cache", "MISS");
+    res.json(payload);
+  } catch (err) {
+    const status = err && typeof err.statusCode === "number" ? err.statusCode : 500;
+
+    let message = err instanceof Error ? err.message : "Unable to run malware check.";
+
+    if (status === 404) {
+      message = "Repository not found (or it may be private).";
+    }
+
+    if (status === 403 && /rate limit/i.test(message)) {
+      message = "GitHub API rate limit exceeded. Set GITHUB_TOKEN in server environment to increase limits.";
+    }
+
+    res.status(status).json({ message });
+  }
+};
+
+/**
+ * Malware detection by downloading the repository ZIP and scanning file contents.
+ * Input: { url: string } (or { input: string } / { repoUrl: string })
+ * Output:
+ * {
+ *   totalFilesScanned: number,
+ *   suspiciousFiles: [{ filePath: string, matchedKeywords: string[] }]
+ * }
+ */
+exports.malwareZipScanRepository = async (req, res) => {
+  let tempBase;
+  let zipPath;
+  let zipBytes;
+
+  try {
+    const url = (req.body && (req.body.url || req.body.repoUrl || req.body.input)) || "";
+    const debug =
+      Boolean(req.query && (req.query.debug === "1" || req.query.debug === "true")) ||
+      Boolean(req.body && req.body.debug);
+
+    const { owner, repo } = parseGithubRepoInput(url);
+    console.log(`[ZIPSCAN] Starting scan for ${owner}/${repo}`);
+
+    const zipUrl = `https://api.github.com/repos/${owner}/${repo}/zipball`;
+
+    const downloaded = await downloadZip(zipUrl);
+    tempBase = downloaded.tempBase;
+    zipPath = downloaded.zipPath;
+    zipBytes = safeNumber(downloaded.zipBytes, 0);
+
+    const stage = { zipDownloaded: true, zipDeleted: false, zipDeleteError: null, extracted: false };
+
+    const extractedRoot = await extractZip(zipPath);
+    stage.extracted = true;
+    console.log(`[ZIPSCAN] Extracted to: ${extractedRoot}`);
+
+    // Requirement: delete ZIP after extraction.
+    try {
+      await fsp.unlink(zipPath);
+      stage.zipDeleted = true;
+      console.log(`[ZIPSCAN] ZIP deleted after extraction: ${zipPath}`);
+    } catch (unlinkErr) {
+      stage.zipDeleteError = unlinkErr instanceof Error ? unlinkErr.message : "Unable to delete ZIP.";
+      console.warn(`[ZIPSCAN] ZIP delete failed: ${zipPath} (${stage.zipDeleteError})`);
+    }
+
+    const keywords = await getMalwareKeywordsFromDB();
+    const result = await scanFiles(extractedRoot, keywords);
+
+    // Pass score + top matches + suspicious files summary to AI.
+    let ai = null;
+    try {
+      const topMatches = Array.isArray(result.matches) ? result.matches.slice(0, 50) : [];
+      const topSuspiciousFiles = Array.isArray(result.suspiciousFiles)
+        ? result.suspiciousFiles.slice(0, 50)
+        : [];
+
+      const aiPrompt =
+        "You are RepoSmart Malware Detector. You are analyzing a GitHub repository by scanning extracted source files for malware keywords. " +
+        "Given the score and matched keywords below, decide if the repository is likely malicious. Output STRICT JSON ONLY with fields: " +
+        "malicious (boolean), confidence (number 0..1), reasoning (string), indicators (string[]). " +
+        "Be conservative: if evidence is weak, set malicious=false and lower confidence.\n\n" +
+        `REPO_URL: ${url}\n` +
+        `TOTAL_FILES_SCANNED: ${safeNumber(result.totalFilesScanned, 0)}\n` +
+        `SUSPICIOUS_FILE_COUNT: ${Array.isArray(result.suspiciousFiles) ? result.suspiciousFiles.length : 0}\n` +
+        `TOTAL_PATTERN_SCORE: ${Math.round(safeNumber(result.totalScore, 0) * 100) / 100}\n` +
+        `TOP_MATCHES_JSON: ${JSON.stringify(topMatches, null, 2)}\n` +
+        `TOP_SUSPICIOUS_FILES_JSON: ${JSON.stringify(topSuspiciousFiles, null, 2)}`;
+
+      const generated = await openRouterGenerateText(aiPrompt);
+      ai = {
+        model: generated.model,
+        output: generated.text,
+        parsed: tryParseJsonObject(generated.text),
+      };
+    } catch {
+      ai = null;
+    }
+
+    const response = {
+      input: { owner, repo, url },
+      repo: {
+        fullName: `${owner}/${repo}`,
+        htmlUrl: `https://github.com/${owner}/${repo}`,
+      },
+      totalFilesScanned: result.totalFilesScanned,
+      suspiciousFiles: result.suspiciousFiles,
+      patternMatch: {
+        totalScore: Math.round(safeNumber(result.totalScore, 0) * 100) / 100,
+        matches: Array.isArray(result.matches) ? result.matches.slice(0, 100) : [],
+      },
+      ai,
+    };
+
+    if (debug) {
+      response.debug = {
+        zipCreated: true,
+        zipBytes: safeNumber(zipBytes, 0),
+        tempDir: typeof tempBase === "string" ? path.basename(tempBase) : null,
+        stage,
+      };
+    }
+
+    res.json(response);
+  } catch (err) {
+    const status = err && typeof err.statusCode === "number" ? err.statusCode : 500;
+    let message = err instanceof Error ? err.message : "Unable to scan repository ZIP.";
+
+    console.error(`[ZIPSCAN] Failed: ${message}`);
+
+    if (status === 404) message = "Repository not found (or it may be private).";
+    if (status === 403 && /rate limit/i.test(message)) {
+      message = "GitHub API rate limit exceeded. Set GITHUB_TOKEN in server environment to increase limits.";
+    }
+
+    res.status(status).json({ message });
+  } finally {
+    // Requirement: delete extracted folder after scanning (also on failure).
+    try {
+      if (typeof tempBase === "string" && tempBase.trim().length > 0) {
+        await fsp.rm(tempBase, { recursive: true, force: true });
+        console.log(`[ZIPSCAN] Temp directory cleaned up: ${tempBase}`);
+      }
+    } catch {
+      // ignore
+    }
+  }
+};
+
+/**
+ * Combined malware scan: metadata keyword scan + ZIP content scan.
+ * Returns a single verdict/AI output based on merged evidence.
+ */
+exports.malwareCombinedScanRepository = async (req, res) => {
+  // ZIP scan uses a temp directory. Always cleaned up in finally.
+  let tempBase;
+  let zipPath;
+  let zipBytes;
+
+  try {
+    const url = (req.body && (req.body.url || req.body.repoUrl || req.body.input)) || "";
+    const { owner, repo } = parseGithubRepoInput(url);
+
+    // ----- Metadata scan (existing behavior from malwareCheckRepository) -----
+    const repoMetaResp = await githubRequestJson(`/repos/${owner}/${repo}`);
+    const repoMeta = repoMetaResp.data;
+
+    const languagesResp = await githubRequestJson(`/repos/${owner}/${repo}/languages`);
+    const languages = languagesResp.data || {};
+
+    let readmeText = "";
+    try {
+      const readmeResp = await githubRequestText(
+        `/repos/${owner}/${repo}/readme`,
+        undefined,
+        "application/vnd.github.raw",
+      );
+      readmeText = readmeResp.data;
+    } catch {
+      readmeText = "";
+    }
+
+    let treeInfo = {
+      fileCount: 0,
+      directoryCount: 0,
+      truncated: false,
+      topLevelCounts: {},
+      paths: [],
+    };
+
+    try {
+      const treeResp = await githubRequestJson(`/repos/${owner}/${repo}/git/trees/${repoMeta.default_branch}`, {
+        recursive: 1,
+      });
+
+      const tree = treeResp.data;
+      const items = tree && Array.isArray(tree.tree) ? tree.tree : [];
+
+      const filePaths = items
+        .filter((item) => item && item.type === "blob" && typeof item.path === "string")
+        .map((item) => item.path);
+
+      const dirCount = items.filter((item) => item && item.type === "tree").length;
+
+      treeInfo = {
+        fileCount: filePaths.length,
+        directoryCount: dirCount,
+        truncated: Boolean(tree && tree.truncated),
+        topLevelCounts: countByTopLevelFolder(filePaths),
+        paths: filePaths,
+      };
+    } catch {
+      // keep going
+    }
+
+    const corpusByField = buildMetadataCorpus({ repoMeta, languages, readmeText, treeInfo });
+
+    const keywordDocs = await getMalwareKeywordDocsFromDB();
+    const metadataMatches = [];
+    let metadataScore = 0;
+
+    for (const keyword of keywordDocs) {
+      const result = keywordMatchesCorpus(keyword, corpusByField);
+      if (!result.matched) continue;
+
+      const weight = safeNumber(keyword.weight, 0);
+      metadataScore += weight;
+      metadataMatches.push({
+        pattern: keyword.pattern,
+        matchMode: keyword.matchMode || "substring",
+        category: keyword.category || "generic",
+        weight,
+        fields: result.fields,
+        source: keyword.source || "custom",
+      });
+    }
+
+    metadataMatches.sort((a, b) => safeNumber(b.weight, 0) - safeNumber(a.weight, 0));
+
+    // ----- ZIP content scan -----
+    const zipUrl = `https://api.github.com/repos/${owner}/${repo}/zipball`;
+    const downloaded = await downloadZip(zipUrl);
+    tempBase = downloaded.tempBase;
+    zipPath = downloaded.zipPath;
+    zipBytes = safeNumber(downloaded.zipBytes, 0);
+
+    const extractedRoot = await extractZip(zipPath);
+
+    // Delete ZIP after extraction.
+    try {
+      await fsp.unlink(zipPath);
+      console.log(`[ZIPSCAN] ZIP deleted after extraction: ${zipPath}`);
+    } catch {
+      // ignore
+    }
+
+    const compiledKeywords = await getMalwareKeywordsFromDB();
+    const zipScan = await scanFiles(extractedRoot, compiledKeywords);
+
+    // ----- Merge evidence into a single score/match list -----
+    const combined = mergeMetadataAndZipMatches(metadataMatches, zipScan.matches);
+
+    // ----- AI (best-effort) -----
+    let ai = null;
+    try {
+      const aiPrompt =
+        "You are RepoSmart Malware Detector. You have BOTH GitHub metadata signals and ZIP content keyword matches. " +
+        "Decide if the repository is likely malicious. Output STRICT JSON ONLY with fields: " +
+        "malicious (boolean), confidence (number 0..1), reasoning (string), indicators (string[]). " +
+        "Be conservative: if evidence is weak, set malicious=false and lower confidence.\n\n" +
+        `REPO_URL: ${url}\n` +
+        `METADATA_SCORE: ${Math.round(safeNumber(metadataScore, 0) * 100) / 100}\n` +
+        `ZIP_FILES_SCANNED: ${safeNumber(zipScan.totalFilesScanned, 0)}\n` +
+        `ZIP_SUSPICIOUS_FILES: ${Array.isArray(zipScan.suspiciousFiles) ? zipScan.suspiciousFiles.length : 0}\n` +
+        `COMBINED_SCORE: ${Math.round(safeNumber(combined.totalScore, 0) * 100) / 100}\n` +
+        `TOP_COMBINED_MATCHES_JSON: ${JSON.stringify(combined.matches.slice(0, 50), null, 2)}\n` +
+        `TOP_ZIP_SUSPICIOUS_FILES_JSON: ${JSON.stringify(zipScan.suspiciousFiles.slice(0, 25), null, 2)}\n` +
+        `REPO_METADATA_JSON: ${JSON.stringify(
+          {
+            fullName: repoMeta.full_name,
+            description: repoMeta.description,
+            topics: Array.isArray(repoMeta.topics) ? repoMeta.topics : [],
+            defaultBranch: repoMeta.default_branch,
+            visibility: repoMeta.visibility,
+            stars: safeNumber(repoMeta.stargazers_count, 0),
+            forks: safeNumber(repoMeta.forks_count, 0),
+            sizeKb: safeNumber(repoMeta.size, 0),
+          },
+          null,
+          2,
+        )}`;
+
+      const generated = await openRouterGenerateText(aiPrompt);
+      ai = {
+        model: generated.model,
+        output: generated.text,
+        parsed: tryParseJsonObject(generated.text),
+      };
+    } catch {
+      ai = null;
+    }
+
+    // Recompute deterministic verdict including AI parsed output.
+    const finalVerdict = computeMalwareVerdict({
+      totalScore: combined.totalScore,
+      matches: combined.matches,
+      repoMeta,
+      readmeText,
+      filePathsText: corpusByField.filePaths,
+      aiParsed: ai && ai.parsed ? ai.parsed : null,
+    });
+
+    const payload = {
+      input: { owner, repo, url },
+      repo: {
+        fullName: repoMeta.full_name,
+        htmlUrl: repoMeta.html_url,
+        description: repoMeta.description,
+        defaultBranch: repoMeta.default_branch,
+        isFork: Boolean(repoMeta.fork),
+        visibility: repoMeta.visibility,
+        stars: safeNumber(repoMeta.stargazers_count, 0),
+        forks: safeNumber(repoMeta.forks_count, 0),
+        watchers: safeNumber(repoMeta.watchers_count, 0),
+        openIssues: safeNumber(repoMeta.open_issues_count, 0),
+        license: repoMeta.license ? repoMeta.license.spdx_id : null,
+        topics: Array.isArray(repoMeta.topics) ? repoMeta.topics : [],
+        createdAt: repoMeta.created_at,
+        updatedAt: repoMeta.updated_at,
+        pushedAt: repoMeta.pushed_at,
+        sizeKb: safeNumber(repoMeta.size, 0),
+      },
+      snapshot: {
+        files: {
+          fileCount: treeInfo.fileCount,
+          directoryCount: treeInfo.directoryCount,
+          truncated: treeInfo.truncated,
+          topLevelCounts: treeInfo.topLevelCounts,
+        },
+        languages: Object.keys(languages),
+        readme: {
+          present: isNonEmptyString(readmeText),
+          wordCount: isNonEmptyString(readmeText) ? readmeText.split(/\s+/).filter(Boolean).length : 0,
+        },
+      },
+      keywordModel: {
+        enabledCount: Array.isArray(keywordDocs) ? keywordDocs.length : 0,
+      },
+      zipScan: {
+        zipBytes: safeNumber(zipBytes, 0),
+        totalFilesScanned: safeNumber(zipScan.totalFilesScanned, 0),
+        suspiciousFiles: Array.isArray(zipScan.suspiciousFiles) ? zipScan.suspiciousFiles : [],
+      },
+      verdict: finalVerdict,
+      patternMatch: {
+        totalScore: Math.round(safeNumber(combined.totalScore, 0) * 100) / 100,
+        matches: combined.matches.slice(0, 100),
+      },
+      ai,
+    };
+
+    res.json(payload);
+  } catch (err) {
+    const status = err && typeof err.statusCode === "number" ? err.statusCode : 500;
+
+    let message = err instanceof Error ? err.message : "Unable to run malware scan.";
+
+    if (status === 404) {
+      message = "Repository not found (or it may be private).";
+    }
+
+    if (status === 403 && /rate limit/i.test(message)) {
+      message = "GitHub API rate limit exceeded. Set GITHUB_TOKEN in server environment to increase limits.";
+    }
+
+    res.status(status).json({ message });
+  } finally {
+    try {
+      if (typeof tempBase === "string" && tempBase.trim().length > 0) {
+        await fsp.rm(tempBase, { recursive: true, force: true });
+        console.log(`[ZIPSCAN] Temp directory cleaned up: ${tempBase}`);
+      }
+    } catch {
+      // ignore
+    }
   }
 };

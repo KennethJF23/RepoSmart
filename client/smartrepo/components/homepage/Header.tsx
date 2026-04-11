@@ -28,6 +28,7 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
   const isHomePage = pathname === "/";
   const isHumanAnalyzePage = pathname === "/analyze";
   const isAiAnalyzePage = pathname === "/ai-analyze";
+  const isMalwarePage = pathname === "/malware";
 
   const navLinkClass = (isActive: boolean) =>
     `transition-colors text-sm font-medium ${
@@ -118,6 +119,13 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
                   aria-current={isAiAnalyzePage ? "page" : undefined}
                 >
                   AI Analyzer
+                </Link>
+                <Link
+                  href="/malware"
+                  className={navLinkClass(isMalwarePage)}
+                  aria-current={isMalwarePage ? "page" : undefined}
+                >
+                  Malware Detector
                 </Link>
               </>
             ) : (
@@ -265,6 +273,20 @@ export function Header({ onLogin, onRegister }: HeaderProps) {
                   aria-current={isAiAnalyzePage ? "page" : undefined}
                 >
                   AI Analyzer
+                </Link>
+
+                <Link
+                  href="/malware"
+                  onClick={closeMobileMenu}
+                  className={
+                    "rounded-md border px-3 py-2 text-sm font-medium transition-colors " +
+                    (isMalwarePage
+                      ? "border-[#1f6feb] text-[#58a6ff] bg-[#1f6feb]/10"
+                      : "border-[#30363d] text-[#c9d1d9] hover:text-[#58a6ff] hover:bg-surface-2")
+                  }
+                  aria-current={isMalwarePage ? "page" : undefined}
+                >
+                  Malware Detector
                 </Link>
 
                 <Button
