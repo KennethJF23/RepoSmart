@@ -7,6 +7,7 @@ const {
 	malwareCheckRepository,
 	malwareZipScanRepository,
 	malwareCombinedScanRepository,
+	malwarePipelineScanRepository,
 } = require("../controllers/repo.controller");
 
 const router = express.Router();
@@ -16,5 +17,6 @@ router.post("/ai-scan", authMiddleware, aiScanRepository);
 router.post("/malware-check", authMiddleware, malwareCheckRepository);
 router.post("/malware-zip-scan", authMiddleware, malwareZipScanRepository);
 router.post("/malware-scan", authMiddleware, malwareCombinedScanRepository);
+router.post("/malware-pipeline-scan", authMiddleware, malwarePipelineScanRepository);
 
 module.exports = router;

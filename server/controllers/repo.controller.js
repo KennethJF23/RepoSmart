@@ -7,9 +7,11 @@ const { pipeline } = require("stream/promises");
 
 const axios = require("axios");
 const unzipper = require("unzipper");
+const mongoose = require("mongoose");
 
 const { redisGetJson, redisSetJson } = require("../config/redis");
 const MalwareKeyword = require("../models/malwareKeyword.model");
+const { scanGithubRepoForMalwarePipeline } = require("../services/malwareScanPipeline");
 
 // In-memory cache to avoid repeated MongoDB calls.
 // This is process-local (each Node instance caches independently).
@@ -2476,5 +2478,231 @@ exports.malwareCombinedScanRepository = async (req, res) => {
     } catch {
       // ignore
     }
+  }
+};
+
+/**
+ * Malware scanning pipeline (ZIP + keyword matching + JS AST hints).
+ * Input: { url: string } (or { input: string })
+ * Output:
+ * {
+ *   verdict: "SAFE" | "SUSPICIOUS" | "MALICIOUS" | "DANGEROUS_DATASET",
+ *   score: number,
+ *   matchCount: number,
+ *   matches: Array<{ pattern: string, category: string, weight: number, file: string, matchedField: "name"|"path"|"content" }>,
+ *   astFindings: { suspiciousFunctions: string[], suspiciousVariables: string[], suspiciousCalls: string[] }
+ * }
+ */
+exports.malwarePipelineScanRepository = async (req, res) => {
+  try {
+    const url = (req.body && (req.body.url || req.body.repoUrl || req.body.input)) || "";
+    const debug =
+      Boolean(req.query && (req.query.debug === "1" || req.query.debug === "true")) ||
+      Boolean(req.body && req.body.debug);
+    const { owner, repo } = parseGithubRepoInput(url);
+
+    const alwaysLog = process.env.REPOSMART_PIPELINE_LOG === "1";
+    const logPrefix = `[PIPELINE] ${owner}/${repo}`;
+    if (debug || alwaysLog) console.log(`${logPrefix} starting scan`);
+
+    const result = await scanGithubRepoForMalwarePipeline({ owner, repo });
+
+    const shouldLogDetails = debug || alwaysLog || safeNumber(result && result.matchCount, 0) === 0;
+    if (shouldLogDetails) {
+      const filesProcessed = result && result._debug ? result._debug.filesProcessed : "?";
+      const score = result && typeof result.score === "number" ? result.score : "?";
+      const matchCount = result && typeof result.matchCount === "number" ? result.matchCount : "?";
+      console.log(`${logPrefix} extracted=${filesProcessed} score=${score} matches=${matchCount}`);
+
+      const zipStats = result && result._debug ? result._debug.zipStats : null;
+      if (zipStats) console.log(`${logPrefix} zipStats=${JSON.stringify(zipStats)}`);
+
+      const keywordModel = result && result._debug ? result._debug.keywordModel : null;
+      if (keywordModel) {
+        const view = {
+          enabledSubstringCount: keywordModel.enabledSubstringCount,
+          enabledRegexCount: keywordModel.enabledRegexCount,
+          samplePatterns: Array.isArray(keywordModel.samplePatterns) ? keywordModel.samplePatterns.slice(0, 10) : [],
+        };
+        console.log(`${logPrefix} keywordModel=${JSON.stringify(view)}`);
+
+        if (safeNumber(keywordModel.enabledSubstringCount, 0) + safeNumber(keywordModel.enabledRegexCount, 0) === 0) {
+          console.warn(`${logPrefix} WARNING: no enabled MalwareKeyword patterns found in MongoDB.`);
+        }
+      }
+
+      // Verify DB connectivity + keyword counts from MongoDB at request-time.
+      try {
+        const ready = mongoose.connection ? mongoose.connection.readyState : null;
+        const dbName = mongoose.connection ? mongoose.connection.name : null;
+        const host = mongoose.connection ? mongoose.connection.host : null;
+        const kwTotal = await MalwareKeyword.countDocuments({});
+        const kwEnabled = await MalwareKeyword.countDocuments({ enabled: true });
+        console.log(
+          `${logPrefix} mongo={readyState:${ready},db:${dbName},host:${host}} MalwareKeyword={total:${kwTotal},enabled:${kwEnabled}}`,
+        );
+      } catch (e) {
+        console.warn(`${logPrefix} Unable to count MalwareKeyword docs for debug.`);
+      }
+
+      const topExtensions =
+        result && result._debug && result._debug.fileStats && Array.isArray(result._debug.fileStats.topExtensions)
+          ? result._debug.fileStats.topExtensions
+          : null;
+      if (topExtensions) console.log(`${logPrefix} topExtensions=${JSON.stringify(topExtensions)}`);
+
+      const firstPaths =
+        result && result._debug && result._debug.fileStats && Array.isArray(result._debug.fileStats.firstFilePaths)
+          ? result._debug.fileStats.firstFilePaths.slice(0, 10)
+          : null;
+      if (firstPaths) console.log(`${logPrefix} firstFilePaths=${JSON.stringify(firstPaths)}`);
+
+      const byField = result && result._debug && result._debug.matchStats ? result._debug.matchStats.byField : null;
+      if (byField) console.log(`${logPrefix} matchByField=${JSON.stringify(byField)}`);
+    }
+
+    // Best-effort GitHub metadata for AI context.
+    let repoMeta = null;
+    let languages = null;
+    let readmeText = "";
+    let treeInfo = { paths: [] };
+
+    try {
+      const repoMetaResp = await githubRequestJson(`/repos/${owner}/${repo}`);
+      repoMeta = repoMetaResp.data;
+    } catch {
+      repoMeta = null;
+    }
+
+    try {
+      const languagesResp = await githubRequestJson(`/repos/${owner}/${repo}/languages`);
+      languages = languagesResp.data || {};
+    } catch {
+      languages = null;
+    }
+
+    try {
+      const readmeResp = await githubRequestText(
+        `/repos/${owner}/${repo}/readme`,
+        undefined,
+        "application/vnd.github.raw",
+      );
+      readmeText = typeof readmeResp.data === "string" ? readmeResp.data : "";
+    } catch {
+      readmeText = "";
+    }
+
+    try {
+      const treeResp = await githubRequestJson(`/repos/${owner}/${repo}/git/trees/${repoMeta && repoMeta.default_branch ? repoMeta.default_branch : "HEAD"}`,
+        { recursive: 1 },
+      );
+      const tree = treeResp.data;
+      const items = tree && Array.isArray(tree.tree) ? tree.tree : [];
+      const filePaths = items
+        .filter((item) => item && item.type === "blob" && typeof item.path === "string")
+        .map((item) => item.path)
+        .slice(0, 500);
+      treeInfo = { paths: filePaths };
+    } catch {
+      treeInfo = { paths: [] };
+    }
+
+    const metadataCorpus = buildMetadataCorpus({
+      repoMeta: repoMeta || { name: `${owner}/${repo}`, full_name: `${owner}/${repo}`, topics: [] },
+      languages: languages || {},
+      readmeText,
+      treeInfo,
+    });
+
+    // Best-effort AI verdict using pipeline evidence.
+    // Never downgrade a deterministic DANGEROUS_DATASET or MALICIOUS verdict.
+    let ai = null;
+    try {
+      const topMatches = Array.isArray(result.matches) ? result.matches.slice(0, 120) : [];
+      const aiPrompt =
+        "You are RepoSmart Malware Detector. You analyzed a GitHub repository using keyword matching across file name/path/content and JS AST identifier matching. " +
+        "Return STRICT JSON ONLY with fields: verdict (one of SAFE|SUSPICIOUS|MALICIOUS|DANGEROUS_DATASET), confidence (number 0..1), reasoning (string), indicators (string[]). " +
+        "Rules: If evidence suggests malware dataset/samples, choose DANGEROUS_DATASET. Do NOT mark SAFE just because the word 'dataset' appears. Be conservative: when evidence is weak, prefer SAFE or SUSPICIOUS.\n\n" +
+        `REPO_INPUT: ${owner}/${repo}\n` +
+        `GITHUB_METADATA_JSON: ${JSON.stringify(metadataCorpus, null, 2)}\n` +
+        `DETERMINISTIC_VERDICT: ${result.verdict}\n` +
+        `SCORE: ${result.score}\n` +
+        `MATCH_COUNT: ${result.matchCount}\n` +
+        `TOP_MATCHES_JSON: ${JSON.stringify(topMatches, null, 2)}\n` +
+        `AST_FINDINGS_JSON: ${JSON.stringify(result.astFindings || {}, null, 2)}`;
+
+      const generated = await openRouterGenerateText(aiPrompt);
+      ai = {
+        model: generated.model,
+        output: generated.text,
+        parsed: tryParseJsonObject(generated.text),
+      };
+    } catch {
+      ai = null;
+    }
+
+    let finalVerdict = result.verdict;
+    const aiParsed = ai && ai.parsed ? ai.parsed : null;
+    const aiVerdict = aiParsed && typeof aiParsed.verdict === "string" ? aiParsed.verdict : null;
+    const allowed = new Set(["SAFE", "SUSPICIOUS", "MALICIOUS", "DANGEROUS_DATASET"]);
+    if (aiVerdict && allowed.has(aiVerdict)) {
+      // Only upgrade or keep; never downgrade high severity.
+      const rank = { SAFE: 0, SUSPICIOUS: 1, MALICIOUS: 2, DANGEROUS_DATASET: 3 };
+      const deterministicRank = rank[result.verdict] ?? 0;
+      const aiRank = rank[aiVerdict] ?? 0;
+      finalVerdict = aiRank > deterministicRank ? aiVerdict : result.verdict;
+    }
+
+    // Metadata-based dataset override.
+    // Some repos (ex: threat intel datasets like MITRE ATT&CK STIX) may have few/no matches
+    // but should still be classified as a dataset rather than SAFE.
+    const metadataText = [
+      metadataCorpus.name,
+      metadataCorpus.description,
+      metadataCorpus.topics,
+      metadataCorpus.languages,
+      metadataCorpus.readme,
+      metadataCorpus.filePaths,
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+
+    const datasetTerms = ["dataset", "datasets", "stix", "attack-stix", "attack stix", "taxii", "cti", "threat intel", "threat intelligence"];
+    const mitreTerms = ["mitre", "attack", "enterprise-attack", "mobile-attack", "ics-attack"]; // dataset families
+    const hasDatasetSignal = datasetTerms.some((t) => metadataText.includes(t));
+    const hasMitreSignal = mitreTerms.some((t) => metadataText.includes(t));
+
+    if (hasDatasetSignal && hasMitreSignal && finalVerdict === "SAFE") {
+      finalVerdict = "DANGEROUS_DATASET";
+    }
+
+    const payload = {
+      ...result,
+      verdict: finalVerdict,
+      ai,
+
+    };
+
+    if (!debug && payload && typeof payload === "object") {
+      // Remove debug-only internals by default.
+      delete payload._debug;
+    }
+
+    res.json(payload);
+  } catch (err) {
+    const status = err && typeof err.statusCode === "number" ? err.statusCode : 500;
+
+    let message = err instanceof Error ? err.message : "Unable to run malware scan.";
+
+    if (status === 404) {
+      message = "Repository not found (or it may be private).";
+    }
+
+    if (status === 403 && /rate limit/i.test(message)) {
+      message = "GitHub API rate limit exceeded. Set GITHUB_TOKEN in server environment to increase limits.";
+    }
+
+    res.status(status).json({ message });
   }
 };
