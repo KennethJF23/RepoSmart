@@ -28,9 +28,9 @@ export function LoadingVideo({
         className,
       )}
     >
-      <div className="w-full max-w-md rounded-2xl border border-[#30363d] bg-surface-1/90 p-4">
+      <div className="w-full max-w-2xl rounded-2xl border border-[#30363d] bg-surface-1/90 p-4 sm:p-6">
         <video
-          className="w-full rounded-xl border border-[#30363d] bg-background"
+          className="w-full max-h-[70vh] rounded-xl border border-[#30363d] bg-background object-contain"
           autoPlay
           loop
           muted
