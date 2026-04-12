@@ -459,9 +459,29 @@ function extractOpenRouterText(payload) {
   return "";
 }
 
+function getFetchTimeoutMs(envName, fallbackMs) {
+  const raw = process.env[envName];
+  if (!isNonEmptyString(raw)) return fallbackMs;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallbackMs;
+  return Math.floor(parsed);
+}
+
+async function fetchWithTimeout(url, options, timeoutMs) {
+  const ms = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 20_000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...(options || {}), signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function openRouterGenerateText(prompt) {
   const apiKey = getOpenRouterApiKey();
   const models = getOpenRouterModels();
+  const timeoutMs = getFetchTimeoutMs("OPENROUTER_TIMEOUT_MS", 25_000);
 
   const shouldFallback = (statusCode, message) => {
     // Typical transient failures for free-tier/shared providers.
@@ -480,27 +500,46 @@ async function openRouterGenerateText(prompt) {
   let lastError = null;
 
   for (const model of models) {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-        // Optional headers recommended by OpenRouter (harmless if omitted)
-        "X-Title": "RepoSmart",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.2,
-        max_tokens: 1024,
-        provider: {
-          // Enforce free-only usage at the routing layer.
-          // If no $0 provider is available, the request will fail rather than charge.
-          max_price: { prompt: 0, completion: 0 },
-          sort: "price",
+    let res;
+    try {
+      res = await fetchWithTimeout(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+            // Optional headers recommended by OpenRouter (harmless if omitted)
+            "X-Title": "RepoSmart",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.2,
+            max_tokens: 1024,
+            provider: {
+              // Enforce free-only usage at the routing layer.
+              // If no $0 provider is available, the request will fail rather than charge.
+              max_price: { prompt: 0, completion: 0 },
+              sort: "price",
+            },
+          }),
         },
-      }),
-    });
+        timeoutMs,
+      );
+    } catch (err) {
+      const isAbort =
+        err &&
+        typeof err === "object" &&
+        ((err.name && String(err.name) === "AbortError") || /aborted|abort/i.test(String(err.message || "")));
+
+      const wrapped = new Error(
+        isAbort ? `OpenRouter request timed out after ${timeoutMs}ms.` : (err && err.message ? err.message : "OpenRouter request failed."),
+      );
+      wrapped.statusCode = isAbort ? 504 : 502;
+      lastError = wrapped;
+      continue;
+    }
 
     const json = await res.json().catch(() => null);
 
@@ -910,10 +949,14 @@ function mergeMetadataAndZipMatches(metadataMatches, zipMatches) {
 
 async function githubRequestJson(path, query) {
   const url = buildGitHubApiUrl(path, query);
-  const res = await fetch(url, {
-    method: "GET",
-    headers: getGitHubHeaders(),
-  });
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: "GET",
+      headers: getGitHubHeaders(),
+    },
+    getFetchTimeoutMs("GITHUB_FETCH_TIMEOUT_MS", 20_000),
+  );
 
   const text = await res.text();
   let json = null;
@@ -943,10 +986,14 @@ async function githubRequestText(path, query, accept) {
   const headers = getGitHubHeaders();
   if (accept) headers.Accept = accept;
 
-  const res = await fetch(url, {
-    method: "GET",
-    headers,
-  });
+  const res = await fetchWithTimeout(
+    url,
+    {
+      method: "GET",
+      headers,
+    },
+    getFetchTimeoutMs("GITHUB_FETCH_TIMEOUT_MS", 20_000),
+  );
 
   const text = await res.text();
 
@@ -2505,7 +2552,42 @@ exports.malwarePipelineScanRepository = async (req, res) => {
     const logPrefix = `[PIPELINE] ${owner}/${repo}`;
     if (debug || alwaysLog) console.log(`${logPrefix} starting scan`);
 
-    const result = await scanGithubRepoForMalwarePipeline({ owner, repo });
+    const result = await scanGithubRepoForMalwarePipeline({
+      owner,
+      repo,
+      onProgress: (evt) => {
+        if (!evt || typeof evt !== "object") return;
+        const step = typeof evt.step === "string" ? evt.step : "progress";
+
+        // Always log milestones when debug is enabled (or forced via env).
+        if (!(debug || alwaysLog)) return;
+
+        if (step === "download:done") {
+          console.log(`${logPrefix} download done (${evt.zipBytes || 0} bytes)`);
+          return;
+        }
+        if (step === "extract:done") {
+          console.log(`${logPrefix} extract done (${evt.filesProcessed || 0} files)`);
+          return;
+        }
+        if (step === "keywords:done") {
+          console.log(
+            `${logPrefix} keywords loaded (sub=${evt.enabledSubstringCount || 0}, re=${evt.enabledRegexCount || 0}, docs=${evt.rawEnabledDocsCount || 0})`,
+          );
+          return;
+        }
+        if (step === "scan:done") {
+          console.log(
+            `${logPrefix} scan done verdict=${evt.verdict} score=${evt.score} matches=${evt.matchCount}`,
+          );
+          return;
+        }
+
+        if (step && (step.endsWith(":start") || step.endsWith(":done"))) {
+          console.log(`${logPrefix} ${step}`);
+        }
+      },
+    });
 
     const shouldLogDetails = debug || alwaysLog || safeNumber(result && result.matchCount, 0) === 0;
     if (shouldLogDetails) {
@@ -2541,7 +2623,7 @@ exports.malwarePipelineScanRepository = async (req, res) => {
         console.log(
           `${logPrefix} mongo={readyState:${ready},db:${dbName},host:${host}} MalwareKeyword={total:${kwTotal},enabled:${kwEnabled}}`,
         );
-      } catch (e) {
+      } catch {
         console.warn(`${logPrefix} Unable to count MalwareKeyword docs for debug.`);
       }
 
@@ -2562,6 +2644,7 @@ exports.malwarePipelineScanRepository = async (req, res) => {
     }
 
     // Best-effort GitHub metadata for AI context.
+    if (debug || alwaysLog) console.log(`${logPrefix} metadata:start`);
     let repoMeta = null;
     let languages = null;
     let readmeText = "";
@@ -2614,15 +2697,21 @@ exports.malwarePipelineScanRepository = async (req, res) => {
       treeInfo,
     });
 
+    if (debug || alwaysLog) console.log(`${logPrefix} metadata:done`);
+
     // Best-effort AI verdict using pipeline evidence.
     // Never downgrade a deterministic DANGEROUS_DATASET or MALICIOUS verdict.
     let ai = null;
     try {
+      if (debug || alwaysLog) console.log(`${logPrefix} ai:start`);
       const topMatches = Array.isArray(result.matches) ? result.matches.slice(0, 120) : [];
       const aiPrompt =
         "You are RepoSmart Malware Detector. You analyzed a GitHub repository using keyword matching across file name/path/content and JS AST identifier matching. " +
         "Return STRICT JSON ONLY with fields: verdict (one of SAFE|SUSPICIOUS|MALICIOUS|DANGEROUS_DATASET), confidence (number 0..1), reasoning (string), indicators (string[]). " +
-        "Rules: If evidence suggests malware dataset/samples, choose DANGEROUS_DATASET. Do NOT mark SAFE just because the word 'dataset' appears. Be conservative: when evidence is weak, prefer SAFE or SUSPICIOUS.\n\n" +
+        "Rules: Choose DANGEROUS_DATASET not only for malware sample repositories, but also for threat-intelligence datasets/corpora (e.g., STIX/CTI/TAXII/IOC feeds, MITRE ATT&CK STIX, indicator collections). " +
+        "This category can be legitimate/educational but still represents dangerous content. " +
+        "Be conservative about escalation to MALICIOUS unless there are strong code-level indicators of harmful behavior. " +
+        "If the repository is primarily a dataset/corpus of malware/indicators (especially with STIX/CTI/MITRE/IOC signals in metadata/README/file paths), prefer DANGEROUS_DATASET over SAFE.\n\n" +
         `REPO_INPUT: ${owner}/${repo}\n` +
         `GITHUB_METADATA_JSON: ${JSON.stringify(metadataCorpus, null, 2)}\n` +
         `DETERMINISTIC_VERDICT: ${result.verdict}\n` +
@@ -2637,20 +2726,42 @@ exports.malwarePipelineScanRepository = async (req, res) => {
         output: generated.text,
         parsed: tryParseJsonObject(generated.text),
       };
+      if (debug || alwaysLog) console.log(`${logPrefix} ai:done model=${ai.model}`);
     } catch {
       ai = null;
+      if (debug || alwaysLog) console.log(`${logPrefix} ai:skip`);
     }
 
     let finalVerdict = result.verdict;
     const aiParsed = ai && ai.parsed ? ai.parsed : null;
     const aiVerdict = aiParsed && typeof aiParsed.verdict === "string" ? aiParsed.verdict : null;
+    const aiConfidence = aiParsed && typeof aiParsed.confidence === "number" ? aiParsed.confidence : null;
     const allowed = new Set(["SAFE", "SUSPICIOUS", "MALICIOUS", "DANGEROUS_DATASET"]);
     if (aiVerdict && allowed.has(aiVerdict)) {
-      // Only upgrade or keep; never downgrade high severity.
+      // Default behavior: upgrade when AI is more severe.
+      // Safety rule: never downgrade a deterministic MALICIOUS or DANGEROUS_DATASET verdict.
       const rank = { SAFE: 0, SUSPICIOUS: 1, MALICIOUS: 2, DANGEROUS_DATASET: 3 };
       const deterministicRank = rank[result.verdict] ?? 0;
       const aiRank = rank[aiVerdict] ?? 0;
-      finalVerdict = aiRank > deterministicRank ? aiVerdict : result.verdict;
+
+      if (aiRank > deterministicRank) {
+        finalVerdict = aiVerdict;
+      } else {
+        finalVerdict = result.verdict;
+      }
+
+      // Allow a narrow downgrade only for false-positive cleanup:
+      // SUSPICIOUS -> SAFE when AI is highly confident.
+      // (Still never downgrade MALICIOUS or DANGEROUS_DATASET.)
+      if (
+        result.verdict === "SUSPICIOUS" &&
+        aiVerdict === "SAFE" &&
+        typeof aiConfidence === "number" &&
+        Number.isFinite(aiConfidence) &&
+        aiConfidence >= 0.85
+      ) {
+        finalVerdict = "SAFE";
+      }
     }
 
     // Metadata-based dataset override.
