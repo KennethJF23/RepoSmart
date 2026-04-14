@@ -7,15 +7,22 @@ RepoSmart is a full-stack app that analyzes GitHub repositories and generates a 
 
 ## Features
 
-- Email/password registration & login (JWT)
-- Analyze public GitHub repos by URL (or `owner/repo` shorthand)
+- Email/password registration & login (JWT) + Google/GitHub OAuth
+- GitHub repo analysis by URL (or `owner/repo` shorthand)
 - Score breakdown + “what to improve next” roadmap
+- Optional AI scan (OpenRouter) for higher-level repo feedback
+- Malware/suspicious-repo scans (metadata scan, ZIP scan, combined scan, and pipeline scan)
 
 ## Prerequisites
 
 - Node.js 18+ (server uses native `fetch`)
 - npm
 - A MongoDB connection string (MongoDB Atlas works fine)
+
+Optional (only if you use these features):
+
+- Google reCAPTCHA keys (required for register/login)
+- OpenRouter API key (required for `/api/repo/ai-scan`; optional for AI-assisted malware scans)
 
 ## Quickstart (local dev)
 
@@ -35,6 +42,12 @@ npm start
 ```
 
 Server runs at `http://localhost:5000` by default.
+
+If you plan to use the malware scan endpoints, seed the keyword dataset (requires `MONGO_URI` configured):
+
+```bash
+npm run seed:malware
+```
 
 ### 2) Start the web app
 
@@ -88,15 +101,27 @@ GOOGLE_CLIENT_ID=your_google_oauth_client_id
 GITHUB_OAUTH_CLIENT_ID=your_github_oauth_client_id
 GITHUB_OAUTH_CLIENT_SECRET=your_github_oauth_client_secret
 
-# Email (password reset / OTP) — Mailtrap SMTP
-MAILTRAP_HOST=sandbox.smtp.mailtrap.io
-MAILTRAP_PORT=2525
-MAILTRAP_USER=your_mailtrap_user
-MAILTRAP_PASS=your_mailtrap_pass
+# AI (OpenRouter)
+# Required for /api/repo/ai-scan. Optional for AI-assisted malware scans.
+OPENROUTER_API_KEY=your_openrouter_api_key
+# Default: OpenRouter free route. The server enforces $0 routing.
+OPENROUTER_MODEL=openrouter/free
+# Optional: ordered fallbacks (models must end with ':free', except openrouter/* routes)
+# OPENROUTER_MODELS=openrouter/free,google/gemma-3-27b-it:free
 
-# Optional: Redis cache for /api/repo/analyze (leave blank to disable caching)
+# Email (password reset / OTP)
+# Default server implementation uses Gmail SMTP (see server/config/sendMail.js).
+GOOGLE_EMAIL_USER=your_gmail_address
+GOOGLE_EMAIL_PASS=your_gmail_app_password
+
+# Optional: Redis cache (leave blank to disable caching)
+# Used by /api/repo/analyze, /api/repo/ai-scan, and malware scan endpoints.
 REDIS_URI=redis://default:<password>@<host>:<port>
 REDIS_ANALYZE_TTL_SECONDS=3600
+
+# Optional: Redis cache TTLs (seconds)
+REDIS_AI_SCAN_TTL_SECONDS=900
+REDIS_MALWARE_SCAN_TTL_SECONDS=900
 ```
 
 Important:
@@ -108,7 +133,7 @@ Important:
 
 The frontend defaults to `http://localhost:5000` for API calls. To override (deployments, different port), set:
 
-Create `client/smartrepo/.env.local`:
+Copy `client/smartrepo/.env.example` to `client/smartrepo/.env.local` (or create `.env.local` manually):
 
 ```bash
 NEXT_PUBLIC_API_URL=http://localhost:5000
@@ -118,17 +143,17 @@ NEXT_PUBLIC_API_URL=http://localhost:5000
 NEXT_PUBLIC_RECAPTCHA_SITE_KEY=your_recaptcha_site_key
 ```
 
-You can also start from the template at `client/smartrepo/.env.example`.
+Note: in production builds, the frontend falls back to `https://reposmart.onrender.com` unless `NEXT_PUBLIC_API_URL` is set.
 
 ## API
 
 Base URL: `http://localhost:5000`
 
 - `POST /api/auth/register`
-	- Body: `{ "username": string, "email": string, "password": string }`
+	- Body: `{ "username": string, "email": string, "password": string, "captchaToken": string }`
 	- Returns: `{ id, username, email, token }`
 - `POST /api/auth/login`
-	- Body: `{ "email": string, "password": string }`
+	- Body: `{ "email": string, "password": string, "captchaToken": string }`
 	- Returns: `{ id, username, email, token }`
 - `GET /api/auth/google-client-id`
 	- Returns: `{ clientId }`
@@ -140,10 +165,42 @@ Base URL: `http://localhost:5000`
 - `POST /api/auth/github`
 	- Body: `{ "code": string, "redirectUri": string }`
 	- Returns: `{ id, username, email, token }`
+
+- `POST /api/auth/forgot-password`
+	- Body: `{ "email": string }`
+- `POST /api/auth/verify-otp`
+	- Body: `{ "email": string, "otp": string }`
+- `POST /api/auth/reset-password`
+	- Body: `{ "email": string, "newPassword": string }`
+
+All repo routes require auth: `Authorization: Bearer <token>`
+
 - `POST /api/repo/analyze`
 	- Auth: `Authorization: Bearer <token>`
-	- Body: `{ "url": "https://github.com/owner/repo" }`
+	- Body: `{ "url": "https://github.com/owner/repo" }` (or `{ "input": "owner/repo" }`)
 	- Returns: repository snapshot + score + roadmap
+
+- `POST /api/repo/ai-scan`
+	- Body: `{ "url": "https://github.com/owner/repo" }`
+	- Requires: `OPENROUTER_API_KEY`
+	- Returns: GitHub metadata + AI output
+
+- `POST /api/repo/malware-check`
+	- Body: `{ "url": "https://github.com/owner/repo" }`
+	- Uses: MongoDB keyword dataset (seed via `npm run seed:malware`)
+	- Returns: keyword matches + deterministic verdict (and optional AI output)
+
+- `POST /api/repo/malware-zip-scan`
+	- Body: `{ "url": "https://github.com/owner/repo" }`
+	- Returns: suspicious files based on extracted ZIP content scan
+
+- `POST /api/repo/malware-scan`
+	- Body: `{ "url": "https://github.com/owner/repo" }`
+	- Returns: combined metadata + ZIP scan + verdict
+
+- `POST /api/repo/malware-pipeline-scan`
+	- Body: `{ "url": "https://github.com/owner/repo" }`
+	- Returns: pipeline scan verdict + AST hints (best-effort)
 
 ## Scripts
 
@@ -161,6 +218,7 @@ npm run lint
 ```bash
 npm start
 npm run lint
+npm run seed:malware
 ```
 
 ## Project structure
