@@ -1,4 +1,4 @@
-import { ShieldCheck, GitFork, Users2, CheckCircle2 } from "lucide-react";
+import { ShieldCheck, GitFork, CheckCircle2 } from "lucide-react";
 
 export function StatsSection() {
   const stats = [
@@ -8,7 +8,6 @@ export function StatsSection() {
       label: "Repositories Analyzed",
       color: "#58a6ff",
     },
-    { icon: Users2, value: "5,000+", label: "Active Users", color: "#3fb950" },
     {
       icon: ShieldCheck,
       value: "98%",
@@ -26,7 +25,7 @@ export function StatsSection() {
   return (
     <section className="py-10 sm:py-12 bg-background border-y border-[#30363d]">
       <div className="container mx-auto px-4 sm:px-6 lg:px-14">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-6 sm:gap-8">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-6 sm:gap-8">
           {stats.map((stat, index) => (
             <div key={index} className="text-center group">
               <div

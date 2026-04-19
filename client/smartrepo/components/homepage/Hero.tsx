@@ -92,7 +92,7 @@ export function Hero({ onLogin, onRegister }: HeroProps) {
 
             {/* Stats */}
             {/* Adjusted to wrap nicely on very small screens */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-6 pt-8 border-t border-[#21262d]">
+            <div className="grid grid-cols-2 gap-6 pt-8 border-t border-[#21262d]">
               <div>
                 <div className="text-2xl font-bold text-white">10K+</div>
                 <div className="text-sm text-[#8b949e]">Repos analyzed</div>
@@ -100,10 +100,6 @@ export function Hero({ onLogin, onRegister }: HeroProps) {
               <div>
                 <div className="text-2xl font-bold text-white">98%</div>
                 <div className="text-sm text-[#8b949e]">Accuracy</div>
-              </div>
-              <div className="col-span-2 sm:col-span-1">
-                <div className="text-2xl font-bold text-white">5K+</div>
-                <div className="text-sm text-[#8b949e]">Active users</div>
               </div>
             </div>
           </div>
