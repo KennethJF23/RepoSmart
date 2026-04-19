@@ -698,7 +698,7 @@ export default function AnalyzePage() {
                                   paddingAngle={2}
                                   stroke="none"
                                 >
-                                  {languageChart.map((entry, index) => (
+                                  {languageChart.map((entry) => (
                                     <Cell
                                       key={entry.name}
                                       fill={entry.color}
