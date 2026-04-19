@@ -119,9 +119,9 @@ function summarizeAnomalies(features) {
 }
 
 function computeFinalVerdict({ baseScore, anomalyScore }) {
-    // If strong anomaly but low malware score, escalate to SUSPICIOUS.
+    // If strong anomaly but low malware score, return a dedicated anomaly verdict.
     if (anomalyScore >= 4.5 && baseScore < 15) {
-        return "SUSPICIOUS";
+        return "ANOMALOUS";
     }
     return null; // fallback to existing verdict
 }
