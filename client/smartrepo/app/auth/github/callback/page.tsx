@@ -57,7 +57,7 @@ export default function GithubCallbackPage() {
         });
 
         setAuth(payload);
-        router.replace("/");
+        router.replace("/dashboard");
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to complete GitHub sign in.");
       }

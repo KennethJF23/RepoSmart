@@ -1,3 +1,5 @@
+import { pushActivityLog } from "@/lib/activity";
+
 export function getApiBaseUrl() {
   const raw = process.env.NEXT_PUBLIC_API_URL;
   if (raw && raw.trim().length > 0) {
@@ -45,6 +47,7 @@ type PostJsonOptions = {
 };
 
 export async function postJson<T>(path: string, body: unknown, options: PostJsonOptions = {}): Promise<T> {
+  const startedAt = performance.now();
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -57,6 +60,18 @@ export async function postJson<T>(path: string, body: unknown, options: PostJson
     method: "POST",
     headers,
     body: JSON.stringify(body),
+  });
+
+  const durationMs = performance.now() - startedAt;
+  const cacheHeader = (res.headers.get("X-RepoSmart-Cache") || "").toUpperCase();
+  const cache = cacheHeader === "HIT" || cacheHeader === "MISS" ? cacheHeader : "N/A";
+
+  pushActivityLog({
+    endpoint: path,
+    body,
+    status: res.status,
+    cache,
+    durationMs,
   });
 
   const data = await res.json().catch(() => null);

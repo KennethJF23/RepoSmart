@@ -26,7 +26,7 @@ export function useGoogleAuth(onAuthenticated?: () => void) {
                 setAuth(payload);
                 onAuthenticated?.();
 
-                router.push("/analyze");
+                router.push("/dashboard");
 
             } catch (err) {
                 console.error("Google login failed", err);

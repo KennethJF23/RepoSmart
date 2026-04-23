@@ -82,7 +82,7 @@ export default function App() {
         defaultTab={authDialogTab}
         onAuthenticated={() => {
           setAuthRedirecting(true);
-          router.push('/analyze');
+          router.push('/dashboard');
         }}
       />
     </div>

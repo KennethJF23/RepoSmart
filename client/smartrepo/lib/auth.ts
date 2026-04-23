@@ -4,9 +4,15 @@ export type AuthUser = {
   email: string;
 };
 
+export type AuthMeta = {
+  firstAuthenticatedAt: string;
+  lastAuthenticatedAt: string;
+};
+
 const STORAGE_KEYS = {
   token: "reposmart_token",
   user: "reposmart_user",
+  meta: "reposmart_auth_meta",
 } as const;
 
 const AUTH_CHANGED_EVENT = "reposmart-auth-changed";
@@ -61,6 +67,10 @@ export function setAuth(payload: {
   token: string;
 }) {
   if (!isBrowser()) return;
+
+  const now = new Date().toISOString();
+  const existingMeta = getAuthMeta();
+
   localStorage.setItem(STORAGE_KEYS.token, payload.token);
   localStorage.setItem(
     STORAGE_KEYS.user,
@@ -70,14 +80,64 @@ export function setAuth(payload: {
       email: payload.email,
     }),
   );
+  localStorage.setItem(
+    STORAGE_KEYS.meta,
+    JSON.stringify({
+      firstAuthenticatedAt: existingMeta?.firstAuthenticatedAt ?? now,
+      lastAuthenticatedAt: now,
+    }),
+  );
 
   window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+}
+
+export function getAuthMeta(): AuthMeta | null {
+  if (!isBrowser()) return null;
+  const raw = localStorage.getItem(STORAGE_KEYS.meta);
+  if (!raw) {
+    const token = localStorage.getItem(STORAGE_KEYS.token);
+    const user = localStorage.getItem(STORAGE_KEYS.user);
+
+    if (token && user) {
+      const now = new Date().toISOString();
+      const fallbackMeta: AuthMeta = {
+        firstAuthenticatedAt: now,
+        lastAuthenticatedAt: now,
+      };
+      localStorage.setItem(STORAGE_KEYS.meta, JSON.stringify(fallbackMeta));
+      return fallbackMeta;
+    }
+
+    return null;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "firstAuthenticatedAt" in parsed &&
+      "lastAuthenticatedAt" in parsed &&
+      typeof (parsed as { firstAuthenticatedAt: unknown }).firstAuthenticatedAt === "string" &&
+      typeof (parsed as { lastAuthenticatedAt: unknown }).lastAuthenticatedAt === "string"
+    ) {
+      return {
+        firstAuthenticatedAt: (parsed as { firstAuthenticatedAt: string }).firstAuthenticatedAt,
+        lastAuthenticatedAt: (parsed as { lastAuthenticatedAt: string }).lastAuthenticatedAt,
+      };
+    }
+  } catch {
+    // ignore
+  }
+
+  return null;
 }
 
 export function clearAuth() {
   if (!isBrowser()) return;
   localStorage.removeItem(STORAGE_KEYS.token);
   localStorage.removeItem(STORAGE_KEYS.user);
+  localStorage.removeItem(STORAGE_KEYS.meta);
   window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
 }
 

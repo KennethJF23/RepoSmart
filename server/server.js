@@ -8,7 +8,13 @@ const app = express();
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 
-app.use(cors());
+app.use(
+    cors({
+        origin: true,
+        credentials: true,
+        exposedHeaders: ["X-RepoSmart-Cache"],
+    }),
+);
 app.use(express.json());
 
 app.use("/api/auth",require("./routes/auth.routes"))
