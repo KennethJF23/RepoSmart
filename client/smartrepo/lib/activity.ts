@@ -1,7 +1,10 @@
+import { getAuthUser } from "@/lib/auth";
+
 export type ActivityCacheStatus = "HIT" | "MISS" | "N/A";
 
 export type ActivityLogItem = {
   id: string;
+  userId: string;
   action: string;
   endpoint: string;
   repository: string;
@@ -13,6 +16,7 @@ export type ActivityLogItem = {
 
 const STORAGE_KEY = "reposmart_activity_log";
 const MAX_ITEMS = 120;
+const DASHBOARD_EXCLUDED_ACTIONS = new Set(["USER SIGN IN"]);
 
 function isBrowser() {
   return typeof window !== "undefined";
@@ -91,11 +95,19 @@ export function pushActivityLog(params: {
   durationMs: number;
 }) {
   if (!isBrowser()) return;
+  const currentUser = getAuthUser();
+  if (!currentUser) return;
+
+  const action = mapAction(params.endpoint);
+  if (DASHBOARD_EXCLUDED_ACTIONS.has(action)) {
+    return;
+  }
 
   const existing = safeJsonParse<ActivityLogItem[]>(localStorage.getItem(STORAGE_KEY), []);
   const nextItem: ActivityLogItem = {
     id: typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-    action: mapAction(params.endpoint),
+    userId: currentUser.id,
+    action,
     endpoint: params.endpoint,
     repository: parseRepository(params.body),
     status: params.status,
@@ -110,7 +122,12 @@ export function pushActivityLog(params: {
 
 export function getActivityLogs(): ActivityLogItem[] {
   if (!isBrowser()) return [];
-  return safeJsonParse<ActivityLogItem[]>(localStorage.getItem(STORAGE_KEY), []);
+  const currentUser = getAuthUser();
+  if (!currentUser) return [];
+
+  return safeJsonParse<ActivityLogItem[]>(localStorage.getItem(STORAGE_KEY), []).filter(
+    (row) => row.userId === currentUser.id && !DASHBOARD_EXCLUDED_ACTIONS.has(row.action),
+  );
 }
 
 function getRowsOldestFirst() {
